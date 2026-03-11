@@ -1,0 +1,59 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: detoserve-agent
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: detoserve-agent
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: detoserve-agent
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: detoserve-agent
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      serviceAccountName: {{ .Values.serviceAccount.name }}
+      containers:
+        - name: agent
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: 9090
+              name: http
+          env:
+            - name: CONTROL_PLANE_URL
+              value: {{ .Values.controlPlane.url | quote }}
+            - name: CLUSTER_ID
+              value: {{ .Values.cluster.id | quote }}
+            - name: CLUSTER_NAME
+              value: {{ .Values.cluster.name | quote }}
+            - name: REPORT_INTERVAL_SEC
+              value: {{ .Values.reportIntervalSec | quote }}
+            - name: PORT
+              value: "9090"
+            {{- if .Values.controlPlane.apiToken }}
+            - name: API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: detoserve-agent-token
+                  key: token
+            {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10

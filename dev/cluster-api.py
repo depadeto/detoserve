@@ -1,114 +1,135 @@
 """
-Lightweight cluster discovery API for the DetoServe dev environment.
-Queries the local Kubernetes cluster for node/GPU information and
-serves it as JSON for the frontend dashboard.
+Dev cluster API — simulates the SkyPilot Bridge /api/clusters endpoint
+by querying the local Kubernetes cluster directly.
+
+In production, the DetoServe agent on each cluster sends heartbeats
+to the SkyPilot Bridge, which aggregates them. This dev server
+does it locally so you can test the frontend without deploying agents.
 """
 import json
 import subprocess
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 
-def get_cluster_info():
-    result = subprocess.run(
-        ["kubectl", "get", "nodes", "-o", "json"],
-        capture_output=True, text=True
-    )
+def get_cluster_state():
+    result = subprocess.run(["kubectl", "get", "nodes", "-o", "json"], capture_output=True, text=True)
     if result.returncode != 0:
-        return {"error": result.stderr}
+        return None
 
     data = json.loads(result.stdout)
-    cluster_name = "detoserve-dev"
-
-    try:
-        ctx = subprocess.run(
-            ["kubectl", "config", "current-context"],
-            capture_output=True, text=True
-        )
-        cluster_name = ctx.stdout.strip()
-    except Exception:
-        pass
+    ctx = subprocess.run(["kubectl", "config", "current-context"], capture_output=True, text=True)
+    cluster_id = ctx.stdout.strip() if ctx.returncode == 0 else "unknown"
 
     nodes = []
     total_gpus = 0
-    total_gpus_available = 0
+    available_gpus = 0
+    gpu_map = {}
 
-    for node in data.get("items", []):
-        meta = node["metadata"]
+    for item in data.get("items", []):
+        meta = item["metadata"]
         labels = meta.get("labels", {})
-        status = node.get("status", {})
-        capacity = status.get("capacity", {})
-        allocatable = status.get("allocatable", {})
-
-        gpu_capacity = int(capacity.get("nvidia.com/gpu", "0"))
-        gpu_allocatable = int(allocatable.get("nvidia.com/gpu", "0"))
-
+        status = item.get("status", {})
+        cap = status.get("capacity", {})
+        alloc = status.get("allocatable", {})
         conditions = status.get("conditions", [])
-        ready = any(
-            c["type"] == "Ready" and c["status"] == "True"
-            for c in conditions
-        )
+        node_info = status.get("nodeInfo", {})
 
-        roles = []
+        gpu_cap = int(cap.get("nvidia.com/gpu", "0"))
+        gpu_alloc = int(alloc.get("nvidia.com/gpu", "0"))
+        ready = any(c["type"] == "Ready" and c["status"] == "True" for c in conditions)
+        role = "worker"
         for k in labels:
             if k.startswith("node-role.kubernetes.io/"):
-                roles.append(k.split("/")[1])
+                role = k.split("/")[1]
 
-        node_info = {
+        mem_ki = int("".join(c for c in cap.get("memory", "0") if c.isdigit()) or "0")
+        mem_gb = f"{mem_ki / 1024 / 1024:.1f}"
+
+        gpu_type = labels.get("nvidia.com/gpu.machine", "")
+        gpu_family = labels.get("nvidia.com/gpu.family", "")
+
+        node = {
             "name": meta["name"],
             "status": "Ready" if ready else "NotReady",
-            "roles": roles if roles else ["worker"],
-            "gpu": {
-                "count": gpu_capacity,
-                "available": gpu_allocatable,
-                "family": labels.get("nvidia.com/gpu.family", ""),
-                "machine": labels.get("nvidia.com/gpu.machine", ""),
-                "pool": labels.get("run.ai/simulated-gpu-node-pool", ""),
-                "driver": labels.get("nvidia.com/cuda.driver.major", ""),
-            },
-            "cpu": capacity.get("cpu", "0"),
-            "memory": capacity.get("memory", "0"),
-            "k8s_version": status.get("nodeInfo", {}).get("kubeletVersion", ""),
-            "os": status.get("nodeInfo", {}).get("osImage", ""),
-            "container_runtime": status.get("nodeInfo", {}).get("containerRuntimeVersion", ""),
+            "role": role,
+            "cpu": cap.get("cpu", "0"),
+            "memory_gb": mem_gb,
+            "gpu_type": gpu_type,
+            "gpu_count": gpu_cap,
+            "gpu_available": gpu_alloc,
+            "gpu_family": gpu_family,
+            "k8s_version": node_info.get("kubeletVersion", ""),
+            "container_runtime": node_info.get("containerRuntimeVersion", ""),
         }
-        nodes.append(node_info)
-        total_gpus += gpu_capacity
-        total_gpus_available += gpu_allocatable
+        nodes.append(node)
+        total_gpus += gpu_cap
+        available_gpus += gpu_alloc
 
-    gpu_nodes = [n for n in nodes if n["gpu"]["count"] > 0]
-    gpu_types = {}
-    for n in gpu_nodes:
-        machine = n["gpu"]["machine"] or "Unknown"
-        if machine not in gpu_types:
-            gpu_types[machine] = {"count": 0, "available": 0, "family": n["gpu"]["family"]}
-        gpu_types[machine]["count"] += n["gpu"]["count"]
-        gpu_types[machine]["available"] += n["gpu"]["available"]
+        if gpu_type:
+            if gpu_type not in gpu_map:
+                gpu_map[gpu_type] = {"name": gpu_type, "family": gpu_family, "count": 0, "available": 0}
+            gpu_map[gpu_type]["count"] += gpu_cap
+            gpu_map[gpu_type]["available"] += gpu_alloc
 
-    return {
-        "cluster": {
-            "name": cluster_name,
-            "provider": "k3d (local dev)",
-            "status": "healthy",
-            "k8s_version": nodes[0]["k8s_version"] if nodes else "",
-            "node_count": len(nodes),
-            "gpu_node_count": len(gpu_nodes),
-            "total_gpus": total_gpus,
-            "available_gpus": total_gpus_available,
-            "gpu_types": gpu_types,
-        },
+    provider = "Kubernetes"
+    if cluster_id.startswith("k3d-"):
+        provider = "k3d (local)"
+    elif "eks" in cluster_id:
+        provider = "AWS EKS"
+    elif "gke" in cluster_id:
+        provider = "GCP GKE"
+
+    cluster = {
+        "cluster_id": cluster_id,
+        "cluster_name": cluster_id,
+        "status": "healthy",
+        "provider": provider,
+        "k8s_version": nodes[0]["k8s_version"] if nodes else "",
+        "total_gpus": total_gpus,
+        "available_gpus": available_gpus,
+        "gpu_types": list(gpu_map.values()),
         "nodes": nodes,
     }
+    return cluster
 
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/api/clusters":
-            data = get_cluster_info()
+            cluster = get_cluster_state()
+            if not cluster:
+                resp = {"summary": {"cluster_count": 0, "total_gpus": 0, "available_gpus": 0, "total_nodes": 0}, "clusters": []}
+            else:
+                resp = {
+                    "summary": {
+                        "cluster_count": 1,
+                        "total_gpus": cluster["total_gpus"],
+                        "available_gpus": cluster["available_gpus"],
+                        "total_nodes": len(cluster["nodes"]),
+                    },
+                    "clusters": [cluster],
+                }
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
-            self.wfile.write(json.dumps(data, indent=2).encode())
+            self.wfile.write(json.dumps(resp, indent=2).encode())
+        elif self.path.startswith("/api/clusters/heartbeat"):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"status":"ok"}')
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def do_POST(self):
+        if self.path == "/api/clusters/heartbeat":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(b'{"status":"ok"}')
         else:
             self.send_response(404)
             self.end_headers()
@@ -116,14 +137,15 @@ class Handler(BaseHTTPRequestHandler):
     def do_OPTIONS(self):
         self.send_response(200)
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "*")
         self.end_headers()
 
-    def log_message(self, format, *args):
+    def log_message(self, fmt, *args):
         pass
 
 
 if __name__ == "__main__":
     port = 8099
-    print(f"Cluster API running on http://localhost:{port}/api/clusters")
+    print(f"Dev Cluster API on http://localhost:{port}/api/clusters")
     HTTPServer(("", port), Handler).serve_forever()

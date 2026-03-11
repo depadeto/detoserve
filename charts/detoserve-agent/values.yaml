@@ -1,0 +1,29 @@
+image:
+  repository: detoserve/agent
+  tag: latest
+  pullPolicy: IfNotPresent
+
+controlPlane:
+  url: "https://api.detoserve.ai"
+  apiToken: ""
+
+cluster:
+  id: ""
+  name: ""
+
+reportIntervalSec: 10
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi
+
+serviceAccount:
+  create: true
+  name: detoserve-agent
+
+rbac:
+  create: true

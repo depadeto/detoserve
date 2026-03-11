@@ -1,0 +1,6 @@
+apiVersion: v2
+name: detoserve-agent
+description: DetoServe cluster agent — GPU discovery, heartbeat, and cache reporting
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

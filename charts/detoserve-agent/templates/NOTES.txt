@@ -1,0 +1,18 @@
+DetoServe Agent deployed!
+
+Your cluster is now reporting to the DetoServe control plane.
+
+  Cluster ID:    {{ .Values.cluster.id | default "auto-detected" }}
+  Control Plane: {{ .Values.controlPlane.url }}
+
+To verify the agent is running:
+
+  kubectl get pods -n {{ .Release.Namespace }} -l app.kubernetes.io/name=detoserve-agent
+
+To check agent status:
+
+  kubectl port-forward -n {{ .Release.Namespace }} svc/detoserve-agent 9090:9090
+  curl http://localhost:9090/status
+
+The agent will send heartbeats every {{ .Values.reportIntervalSec }} seconds.
+Your cluster should appear on the DetoServe dashboard within a minute.

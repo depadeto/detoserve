@@ -2,113 +2,177 @@
 
 ## Overview
 
-Any Kubernetes cluster with GPU nodes can join the platform as a compute pool.
-Three types of clusters are supported:
+Any Kubernetes cluster with GPU nodes can join the DetoServe platform as a compute pool.
+When you onboard a cluster, the **DetoServe Agent** is deployed via Helm. It automatically
+discovers GPUs using the Kubernetes API (and SkyPilot when available), then continuously
+reports cluster state to the control plane via heartbeats.
 
 | Type | Description | Connection |
 |------|-------------|------------|
 | Internal | Platform-owned GPU clusters | Direct (same VPC) |
 | BYOC | Customer-managed GPU clusters | VPN / VPC peering |
 | Spot | Ephemeral spot/preemptible GPUs | Direct (same VPC) |
+| Local Dev | k3d/kind with fake GPUs | localhost |
 
 ## Prerequisites
 
 - Kubernetes 1.28+
-- NVIDIA GPU Operator installed (or manual device plugin)
+- NVIDIA GPU Operator installed (or manual device plugin + node labels)
 - Network connectivity to control plane (direct or VPN)
 - Helm 3.x
 
-## Step 1: Install Cluster Agent
+## Step 1: Install the DetoServe Agent
 
 ```bash
-helm install detoserve-agent ./charts/cluster-agent \
+helm install detoserve-agent ./charts/detoserve-agent \
+  --namespace detoserve-system --create-namespace \
   --set controlPlane.url=https://api.detoserve.ai \
-  --set cluster.name=prod-east-1 \
-  --set cluster.region=us-east-1 \
-  --set cluster.provider=internal \
-  --set cluster.gpuType=A100-80GB \
-  --set cluster.totalGPUs=32
+  --set cluster.id=prod-east-1 \
+  --set cluster.name="Production East" \
+  --set controlPlane.apiToken=<your-token>
 ```
 
-The agent creates:
-- A Deployment (1 replica) in `detoserve-system` namespace
-- A ServiceAccount with scoped RBAC
-- A ConfigMap with cluster metadata
+The Helm chart deploys:
+- A **Deployment** (1 replica) running the agent binary
+- A **ServiceAccount** with RBAC to read nodes and pods
+- A **ClusterRole/Binding** for GPU and node discovery
+- A **Service** exposing the agent's health/status endpoints
 
-## Step 2: Agent Registers with Control Plane
+### Configuration
 
-On startup, the agent sends:
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `controlPlane.url` | `https://api.detoserve.ai` | Control plane URL to send heartbeats |
+| `controlPlane.apiToken` | `""` | Bearer token for authentication |
+| `cluster.id` | Auto-detected | Unique cluster identifier |
+| `cluster.name` | Same as ID | Human-friendly cluster name |
+| `reportIntervalSec` | `10` | Heartbeat interval in seconds |
+| `image.repository` | `detoserve/agent` | Agent container image |
+| `image.tag` | `latest` | Image tag |
+
+## Step 2: Agent Discovery & Heartbeat
+
+On startup, the agent automatically:
+
+1. **Detects cluster ID** from `kubectl config current-context`
+2. **Queries all nodes** via `kubectl get nodes -o json`
+3. **Extracts GPU info** from node labels and `nvidia.com/gpu` resources:
+   - `nvidia.com/gpu.machine` — GPU model (e.g., `NVIDIA-A100-SXM4-80GB`)
+   - `nvidia.com/gpu.family` — GPU generation (e.g., `ampere`, `hopper`)
+   - `nvidia.com/gpu` capacity and allocatable counts
+4. **Sends heartbeat** to control plane every N seconds:
 
 ```
-POST https://api.detoserve.ai/api/clusters/register
+POST https://api.detoserve.ai/api/clusters/heartbeat
 {
-  "name": "prod-east-1",
-  "region": "us-east-1",
-  "provider": "internal",
-  "endpoint": "https://10.0.1.5:6443",
-  "gpu_type": "A100-80GB",
+  "cluster_id": "prod-east-1",
+  "cluster_name": "Production East",
+  "status": "healthy",
+  "provider": "AWS EKS",
+  "k8s_version": "v1.30.2",
   "total_gpus": 32,
-  "agent_version": "0.1.0",
-  "kube_version": "1.30.2"
+  "available_gpus": 28,
+  "gpu_types": [
+    {"name": "NVIDIA-A100-SXM4-80GB", "family": "ampere", "count": 32, "available": 28}
+  ],
+  "nodes": [
+    {
+      "name": "gpu-node-0",
+      "status": "Ready",
+      "role": "worker",
+      "cpu": "96",
+      "memory_gb": "768.0",
+      "gpu_type": "NVIDIA-A100-SXM4-80GB",
+      "gpu_count": 8,
+      "gpu_available": 7,
+      "gpu_family": "ampere"
+    }
+  ]
 }
 ```
 
-Control plane returns a `cluster_id` and the agent starts heartbeating.
+## Step 3: Verify on Dashboard
 
-## Step 3: Verify Registration
+The cluster appears on the DetoServe dashboard within seconds:
 
 ```bash
-# From control plane
+# Via API
 curl https://api.detoserve.ai/api/clusters
 
-# Expected: cluster appears with status "healthy"
+# Expected: cluster listed with status "healthy"
 ```
 
-## Step 4: Deploy Models
+Or open the frontend and click the **Clusters** tab to see:
+- Cluster summary (total GPUs, available, in use)
+- GPU type breakdown with utilization bars
+- Per-node detail with GPU counts and health status
 
-Once registered, the cluster is available as a target for deployments:
+## Step 4: Deploy Functions
 
-```yaml
-apiVersion: inference.detoserve.ai/v1alpha1
-kind: ModelDeployment
-metadata:
-  name: llama-70b
-spec:
-  clusters:
-    - prod-east-1    # this cluster
+Once a cluster is reporting, it becomes a deployment target:
+
+```bash
+# Via the DetoServe UI or API
+POST /api/functions/{id}/instances
+{
+  "name": "llama-70b-east",
+  "cluster_id": "prod-east-1",
+  "gpu_count": 4,
+  "min_replicas": 2,
+  "max_replicas": 10
+}
 ```
 
-The Deployment Manager sends the manifest to the Cluster Agent,
-which applies it to the local Kubernetes API.
+## BYOC (Bring Your Own Cluster)
 
-## BYOC Cluster Setup
+### Network Requirements
 
-### Network
+The agent only needs **outbound HTTPS** to the control plane.
+No inbound access to the customer cluster is required.
 
-Customer must establish one of:
+Options:
 - **WireGuard VPN** — lightweight, works anywhere
-- **VPC Peering** — AWS/GCP/Azure native peering
-- **Private Link** — cloud-specific private endpoint
-
-The agent only needs outbound HTTPS to the control plane.
-No inbound access is required.
+- **VPC Peering** — AWS/GCP/Azure native
+- **Direct HTTPS** — if control plane is publicly accessible
 
 ### Security
 
-- Agent uses mTLS certificates for control plane communication
-- Agent ServiceAccount has minimal RBAC (create/update pods in specific namespaces)
+- Agent uses bearer token or mTLS for control plane auth
+- ServiceAccount has minimal RBAC (read-only for nodes/pods)
+- No sensitive data leaves the cluster — inference happens locally
 - Customer retains full cluster admin access
-- No sensitive data leaves the customer cluster (inference happens locally)
 
 ### Isolation
 
-- BYOC cluster pods run in tenant-specific namespaces
+- Workloads run in tenant-specific namespaces
 - NetworkPolicies restrict east-west traffic
-- Model weights can be pulled from customer's own storage (S3/GCS)
+- Model weights can be pulled from customer's own storage
+
+## Local Development
+
+For local testing with simulated GPUs:
+
+```bash
+# Create k3d cluster with GPU labels
+k3d cluster create detoserve-dev --config dev/k3d-config.yaml
+
+# Patch nodes with fake GPU resources
+kubectl proxy &
+curl -X PATCH http://localhost:8001/api/v1/nodes/<node>/status \
+  -H "Content-Type: application/json-patch+json" \
+  -d '[{"op":"add","path":"/status/capacity/nvidia.com~1gpu","value":"8"},
+       {"op":"add","path":"/status/allocatable/nvidia.com~1gpu","value":"8"}]'
+
+# Run the dev cluster API (simulates agent → control plane)
+python3 dev/cluster-api.py
+
+# Start the frontend
+cd frontend && npm run dev
+```
 
 ## Agent RBAC
 
-The cluster agent needs these permissions:
+The agent needs read-only access to cluster resources:
 
 ```yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -117,23 +181,11 @@ metadata:
   name: detoserve-agent
 rules:
   - apiGroups: [""]
-    resources: ["namespaces", "pods", "services", "configmaps"]
-    verbs: ["get", "list", "watch", "create", "update", "delete"]
-  - apiGroups: ["apps"]
-    resources: ["deployments", "daemonsets"]
-    verbs: ["get", "list", "watch", "create", "update", "delete"]
-  - apiGroups: ["autoscaling"]
-    resources: ["horizontalpodautoscalers"]
-    verbs: ["get", "list", "watch", "create", "update", "delete"]
-  - apiGroups: ["keda.sh"]
-    resources: ["scaledobjects"]
-    verbs: ["get", "list", "watch", "create", "update", "delete"]
-  - apiGroups: ["networking.k8s.io"]
-    resources: ["networkpolicies"]
-    verbs: ["get", "list", "watch", "create", "update", "delete"]
-  - apiGroups: [""]
-    resources: ["nodes"]
+    resources: ["nodes", "pods"]
     verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["nodes/status"]
+    verbs: ["get"]
   - apiGroups: ["metrics.k8s.io"]
     resources: ["nodes", "pods"]
     verbs: ["get", "list"]
@@ -141,8 +193,9 @@ rules:
 
 ## Monitoring
 
-Once onboarded, the cluster agent:
-- Sends heartbeats every 10s
-- Reports GPU availability via DCGM exporter metrics
-- Reports vLLM queue depth and prefix cache state
-- Exposes a `/metrics` endpoint for Prometheus federation
+Once onboarded, the agent:
+- Sends heartbeats every 10 seconds (configurable)
+- Reports GPU availability from node status
+- Detects provider (EKS/GKE/AKS/k3d) automatically
+- Exposes `/healthz` and `/status` endpoints for debugging
+- Marks clusters as "stale" on the dashboard if heartbeats stop
