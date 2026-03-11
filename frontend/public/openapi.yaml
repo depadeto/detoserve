@@ -1,0 +1,338 @@
+openapi: 3.0.3
+info:
+  title: DetoServe Function Manager API
+  description: REST API for managing functions and instances.
+  version: 1.0.0
+servers:
+  - url: /
+paths:
+  /api/functions:
+    post:
+      summary: Create a new function
+      description: Creates a new function (template/blueprint).
+      operationId: createFunction
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FunctionInput'
+      responses:
+        '201':
+          description: Function created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Function'
+        '400':
+          description: Invalid request
+    get:
+      summary: List functions
+      description: Returns a list of all functions.
+      operationId: listFunctions
+      responses:
+        '200':
+          description: A list of functions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Function'
+
+  /api/functions/{id}:
+    get:
+      summary: Get function detail
+      description: Returns a single function by ID.
+      operationId: getFunctionById
+      parameters:
+        - name: id
+          in: path
+          description: ID of the function
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Function details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Function'
+        '404':
+          description: Function not found
+    delete:
+      summary: Delete function
+      description: Deletes a function by ID.
+      operationId: deleteFunction
+      parameters:
+        - name: id
+          in: path
+          description: ID of the function
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Function deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: deleted
+        '404':
+          description: Function not found
+
+  /api/functions/{id}/deploy:
+    post:
+      summary: Deploy an instance of a function
+      description: Deploys an instance of the specified function.
+      operationId: deployFunction
+      parameters:
+        - name: id
+          in: path
+          description: ID of the function to deploy
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeployInput'
+      responses:
+        '201':
+          description: Instance deployed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Instance'
+        '400':
+          description: Invalid request
+        '404':
+          description: Function not found
+
+  /api/instances:
+    get:
+      summary: List instances
+      description: Returns a list of instances, optionally filtered by function_id.
+      operationId: listInstances
+      parameters:
+        - name: function_id
+          in: query
+          description: Filter instances by function ID
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: A list of instances
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Instance'
+
+  /api/instances/{id}:
+    delete:
+      summary: Remove instance
+      description: Removes an instance by ID.
+      operationId: deleteInstance
+      parameters:
+        - name: id
+          in: path
+          description: ID of the instance
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Instance removed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: deleted
+        '404':
+          description: Instance not found
+
+components:
+  schemas:
+    ResourceSpec:
+      type: object
+      properties:
+        gpu_type:
+          type: string
+          example: "A100"
+        gpu_count:
+          type: integer
+          example: 4
+        tensor_parallel:
+          type: integer
+          example: 4
+        max_model_len:
+          type: integer
+          example: 8192
+        cpu:
+          type: string
+        memory:
+          type: string
+
+    ScalingSpec:
+      type: object
+      properties:
+        min_replicas:
+          type: integer
+          example: 1
+        max_replicas:
+          type: integer
+          example: 10
+        metric:
+          type: string
+          example: "queue_depth"
+        target_value:
+          type: integer
+          example: 10
+
+    RoutingSpec:
+      type: object
+      properties:
+        prefix_caching:
+          type: boolean
+          example: true
+        session_affinity:
+          type: boolean
+          example: true
+
+    FunctionInput:
+      type: object
+      properties:
+        name:
+          type: string
+          example: "llama-70b-chat"
+        description:
+          type: string
+          example: "Llama 3.1 70B for chat completions"
+        version:
+          type: string
+          example: "v1"
+        runtime:
+          type: string
+          example: "vllm"
+        model_uri:
+          type: string
+          example: "meta-llama/Llama-3.1-70B-Instruct"
+        model_format:
+          type: string
+        quantization:
+          type: string
+          example: "fp16"
+        resources:
+          $ref: '#/components/schemas/ResourceSpec'
+        scaling:
+          $ref: '#/components/schemas/ScalingSpec'
+        routing:
+          $ref: '#/components/schemas/RoutingSpec'
+        extra_args:
+          type: array
+          items:
+            type: string
+        env_vars:
+          type: object
+          additionalProperties:
+            type: string
+        tags:
+          type: object
+          additionalProperties:
+            type: string
+      required:
+        - name
+        - model_uri
+
+    Function:
+      allOf:
+        - $ref: '#/components/schemas/FunctionInput'
+        - type: object
+          properties:
+            id:
+              type: string
+              example: "fn-1698765432101"
+            created_at:
+              type: string
+              format: date-time
+            updated_at:
+              type: string
+              format: date-time
+            created_by:
+              type: string
+
+    DeployInput:
+      type: object
+      properties:
+        tenant_id:
+          type: string
+          example: "hospital-a"
+        cluster:
+          type: string
+          example: "us-east-cluster"
+        region:
+          type: string
+          example: "us-east-1"
+        cloud:
+          type: string
+          example: "aws"
+        use_spot:
+          type: boolean
+          example: false
+      required:
+        - tenant_id
+
+    Instance:
+      type: object
+      properties:
+        id:
+          type: string
+          example: "inst-1698765440001"
+        function_id:
+          type: string
+          example: "fn-1698765432101"
+        function_name:
+          type: string
+          example: "llama-70b-chat"
+        tenant_id:
+          type: string
+          example: "hospital-a"
+        cluster:
+          type: string
+          example: "us-east-cluster"
+        region:
+          type: string
+          example: "us-east-1"
+        cloud:
+          type: string
+          example: "aws"
+        use_spot:
+          type: boolean
+          example: false
+        status:
+          type: string
+          example: "running"
+        endpoint:
+          type: string
+        replicas:
+          type: integer
+          example: 2
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
