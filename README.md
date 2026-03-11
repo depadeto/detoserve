@@ -59,6 +59,43 @@ This project provides all of that as an open platform, built on top of proven in
 └────────────────────────────────────────────────────┘
 ```
 
+## Screenshots
+
+### Functions Dashboard
+![Functions Page](docs/screenshots/01-functions-empty.png)
+
+### Create Function
+Define model, runtime, GPU, quantization, and scaling policy in one form.
+
+![Create Function](docs/screenshots/03-create-function-filled.png)
+
+### Function Card
+Each function shows its runtime, GPU config, and scaling at a glance.
+
+![Function Card](docs/screenshots/04-function-card.png)
+
+### Function Detail & Configuration
+Full configuration view with all parameters.
+
+![Function Detail](docs/screenshots/05-function-detail.png)
+
+### Deploy Instance
+Deploy a function to any cloud, region, or cluster with tenant isolation.
+
+![Deploy Modal](docs/screenshots/06-deploy-modal.png)
+
+### Instance Status
+Track deployment status with live state transitions.
+
+![Instance Deploying](docs/screenshots/07-instance-deploying.png)
+
+### All Instances
+Global view of all running deployments across clusters.
+
+![All Instances](docs/screenshots/08-all-instances.png)
+
+---
+
 ### What SkyPilot Handles vs. What We Build
 
 | Concern | SkyPilot | This Project |
