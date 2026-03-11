@@ -43,6 +43,18 @@ function App() {
 
   useEffect(() => { fetchFunctions(); fetchInstances() }, [])
 
+  useEffect(() => {
+    if (!selectedFn) return
+    const interval = setInterval(() => fetchInstances(selectedFn.id), 3000)
+    return () => clearInterval(interval)
+  }, [selectedFn])
+
+  useEffect(() => {
+    if (page !== 'instances') return
+    const interval = setInterval(() => fetchInstances(), 3000)
+    return () => clearInterval(interval)
+  }, [page])
+
   const handleCreate = async (fn) => {
     try {
       const res = await fetch(`${API}/functions`, {
