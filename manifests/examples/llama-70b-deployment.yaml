@@ -1,0 +1,38 @@
+# Example: Deploy Llama 70B across two clusters
+apiVersion: inference.detoserve.ai/v1alpha1
+kind: ModelDeployment
+metadata:
+  name: llama-70b-chat
+  namespace: tenant-hospital-a
+  labels:
+    inference.detoserve.ai/tenant: hospital-a
+spec:
+  model:
+    uri: s3://detoserve-models/meta-llama/Llama-3.1-70B-Instruct
+    format: huggingface
+    quantization: fp8
+  runtime:
+    engine: vllm
+    tensorParallel: 4
+    maxModelLen: 8192
+    extraArgs:
+      - "--enable-prefix-caching"
+      - "--enable-chunked-prefill"
+      - "--max-num-batched-tokens=32768"
+  resources:
+    gpu: nvidia.com/gpu
+    gpuCount: 4
+    gpuMemory: "80Gi"
+    cpu: "32"
+    memory: "128Gi"
+  scaling:
+    minReplicas: 2
+    maxReplicas: 20
+    metric: queue_depth
+    targetValue: 10
+  routing:
+    prefixCaching: true
+    sessionAffinity: true
+  clusters:
+    - prod-east-1
+    - byoc-west-2

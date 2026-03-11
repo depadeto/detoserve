@@ -1,0 +1,26 @@
+# SkyPilot service: vLLM with spot instances + multi-cloud fallback
+# SkyPilot tries spot first, falls back to on-demand.
+# Tries across clouds automatically.
+service:
+  replicas:
+    min: 2
+    max: 20
+  readiness_probe:
+    path: /health
+    initial_delay_seconds: 120
+
+resources:
+  accelerators: {A100:4, H100:4}
+  use_spot: true
+  memory: 128+
+
+setup: |
+  pip install vllm
+
+run: |
+  python -m vllm.entrypoints.openai.api_server \
+    --model meta-llama/Llama-3.1-70B-Instruct \
+    --tensor-parallel-size 4 \
+    --enable-prefix-caching \
+    --max-model-len 8192 \
+    --port 8000

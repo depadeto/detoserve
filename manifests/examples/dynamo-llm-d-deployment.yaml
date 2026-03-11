@@ -1,0 +1,38 @@
+# Example: Deploy with LLM-D / Dynamo disaggregated prefill/decode
+apiVersion: inference.detoserve.ai/v1alpha1
+kind: ModelDeployment
+metadata:
+  name: mixtral-8x7b-dynamo
+  namespace: tenant-analytics
+  labels:
+    inference.detoserve.ai/tenant: analytics-team
+spec:
+  model:
+    uri: hf://mistralai/Mixtral-8x7B-Instruct-v0.1
+    format: huggingface
+    quantization: fp8
+  runtime:
+    engine: dynamo
+    tensorParallel: 2
+    pipelineParallel: 2
+    maxModelLen: 32768
+    extraArgs:
+      - "--disaggregated-prefill"
+      - "--kv-transfer-method=nccl"
+  resources:
+    gpu: nvidia.com/gpu
+    gpuCount: 4
+    gpuMemory: "80Gi"
+    cpu: "32"
+    memory: "128Gi"
+  scaling:
+    minReplicas: 2
+    maxReplicas: 16
+    metric: latency
+    targetValue: 500
+  routing:
+    prefixCaching: true
+    sessionAffinity: true
+  clusters:
+    - prod-east-1
+    - prod-west-2

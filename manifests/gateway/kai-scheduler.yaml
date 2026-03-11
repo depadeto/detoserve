@@ -1,0 +1,125 @@
+# KAI Scheduler — GPU-aware scheduling for inference pods
+#
+# KAI Scheduler replaces the default kube-scheduler for AI workloads.
+# It provides:
+#   - Topology-aware scheduling (multi-GPU placement on same node)
+#   - Gang scheduling (all-or-nothing for tensor parallel pods)
+#   - GPU sharing (multiple small models on one GPU)
+#   - Hierarchical queues with fairshare
+#   - Elastic workloads (scale within min/max pods)
+#   - Integration with Dynamo/Grove for disaggregated serving
+#
+# Install (latest LTS):
+#   helm upgrade -i kai-scheduler \
+#     oci://ghcr.io/kai-scheduler/kai-scheduler/kai-scheduler \
+#     -n kai-scheduler --create-namespace \
+#     --version 0.12.0
+#
+# Production readiness: YES
+#   - CNCF Sandbox project
+#   - LTS releases with 1-year support
+#   - v0.12 LTS supported until Dec 2026
+#   - Presented at KubeCon NA 2025
+#   - Integrates with Dynamo/Grove
+#   - Roadmap includes multi-cluster scheduling
+#
+# Source: https://github.com/kai-scheduler/KAI-Scheduler
+---
+# Queue hierarchy for multi-tenant inference
+#
+# Root Queue (cluster-wide)
+# ├── tenant-hospital-a (guaranteed: 8 GPUs)
+# ├── tenant-analytics  (guaranteed: 16 GPUs)
+# └── shared-pool       (over-quota: elastic)
+apiVersion: scheduling.run.ai/v2alpha1
+kind: Queue
+metadata:
+  name: root
+  namespace: kai-scheduler
+spec:
+  resources:
+    gpu:
+      quota: 64       # total cluster GPUs
+      limit: 64
+  children:
+    - name: tenant-hospital-a
+    - name: tenant-analytics
+    - name: shared-pool
+---
+apiVersion: scheduling.run.ai/v2alpha1
+kind: Queue
+metadata:
+  name: tenant-hospital-a
+  namespace: kai-scheduler
+spec:
+  parentQueue: root
+  resources:
+    gpu:
+      quota: 8        # guaranteed GPUs for this tenant
+      overQuotaWeight: 1
+      limit: 16       # can burst up to 16 if cluster has capacity
+---
+apiVersion: scheduling.run.ai/v2alpha1
+kind: Queue
+metadata:
+  name: tenant-analytics
+  namespace: kai-scheduler
+spec:
+  parentQueue: root
+  resources:
+    gpu:
+      quota: 16
+      overQuotaWeight: 2
+      limit: 32
+---
+apiVersion: scheduling.run.ai/v2alpha1
+kind: Queue
+metadata:
+  name: shared-pool
+  namespace: kai-scheduler
+spec:
+  parentQueue: root
+  resources:
+    gpu:
+      quota: 0         # no guarantee, purely elastic
+      overQuotaWeight: 1
+      limit: 64
+---
+# Example PodGroup for gang-scheduling a 4-GPU vLLM pod
+# KAI ensures all 4 GPUs are available before scheduling
+apiVersion: scheduling.run.ai/v2alpha1
+kind: PodGroup
+metadata:
+  name: llama-70b-gang
+  namespace: tenant-hospital-a
+spec:
+  queue: tenant-hospital-a
+  priority: 50
+  priorityClassName: normal
+  minMember: 1
+  topologyAware:
+    enabled: true           # place GPUs with optimal NVLink topology
+    level: node             # all GPUs on same node
+---
+# Example: Hierarchical PodGroup for Dynamo disaggregated serving
+# KAI schedules prefill + decode pods together with topology awareness
+apiVersion: scheduling.run.ai/v2alpha1
+kind: PodGroup
+metadata:
+  name: mixtral-dynamo
+  namespace: tenant-analytics
+spec:
+  queue: tenant-analytics
+  priority: 50
+  minMember: 2
+  children:
+    - name: prefill-group
+      minMember: 1
+      topologyAware:
+        enabled: true
+        level: node
+    - name: decode-group
+      minMember: 1
+      topologyAware:
+        enabled: true
+        level: node

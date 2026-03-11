@@ -1,0 +1,32 @@
+# Example: Deploy Whisper ASR on Triton (reusing your existing pattern)
+apiVersion: inference.detoserve.ai/v1alpha1
+kind: ModelDeployment
+metadata:
+  name: whisper-flash-asr
+  namespace: tenant-speech
+  labels:
+    inference.detoserve.ai/tenant: speech-team
+spec:
+  model:
+    uri: s3://detoserve-models/whisper-flash/v0.17
+    format: tensorrt
+  runtime:
+    engine: triton
+    image: appsprodacr.azurecr.io/inference/flash/deployment-trt-flash-release:v0.17dev2024121700_v5
+    extraArgs:
+      - "--model-repository=/models"
+  resources:
+    gpu: nvidia.com/gpu
+    gpuCount: 1
+    cpu: "8"
+    memory: "32Gi"
+  scaling:
+    minReplicas: 1
+    maxReplicas: 8
+    metric: queue_depth
+    targetValue: 5
+  routing:
+    prefixCaching: false
+    sessionAffinity: false
+  clusters:
+    - prod-east-1

@@ -1,0 +1,76 @@
+# Envoy External Processor — connects the API gateway to the Smart Router
+# The ext_proc filter calls the Smart Router for every /v1/* request.
+# Smart Router returns X-Route-Cluster header, and Envoy uses it to
+# select the correct upstream cluster.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyExtensionPolicy
+metadata:
+  name: smart-router-ext-proc
+  namespace: detoserve-system
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: inference-api
+  extProc:
+    - backendRefs:
+        - name: smart-router
+          port: 8080
+      processingMode:
+        request:
+          headers: SEND
+          body: BUFFERED     # needed to extract prompt for prefix hashing
+        response:
+          headers: SKIP
+          body: SKIP
+      messageTimeout: 2s    # router must respond within 2s
+---
+# Service for the Smart Router
+apiVersion: v1
+kind: Service
+metadata:
+  name: smart-router
+  namespace: detoserve-system
+spec:
+  selector:
+    app: smart-router
+  ports:
+    - port: 8080
+      targetPort: 8080
+      name: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: smart-router
+  namespace: detoserve-system
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: smart-router
+  template:
+    metadata:
+      labels:
+        app: smart-router
+    spec:
+      containers:
+        - name: smart-router
+          image: detoserve/smart-router:latest
+          ports:
+            - containerPort: 8080
+          env:
+            - name: REDIS_ADDR
+              value: redis-cluster.detoserve-system:6379
+          resources:
+            requests:
+              cpu: "2"
+              memory: 2Gi
+            limits:
+              cpu: "4"
+              memory: 4Gi
+          readinessProbe:
+            httpGet:
+              path: /internal/stats
+              port: 8080
+            periodSeconds: 5

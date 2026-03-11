@@ -1,0 +1,25 @@
+# SkyPilot service: Mixtral 8x7B with Dynamo disaggregated prefill/decode
+service:
+  replicas:
+    min: 2
+    max: 16
+  readiness_probe:
+    path: /health
+    initial_delay_seconds: 180
+
+resources:
+  accelerators: A100:4
+  memory: 256+
+  disk_size: 512
+
+setup: |
+  pip install nvidia-dynamo
+
+run: |
+  dynamo serve \
+    --model mistralai/Mixtral-8x7B-Instruct-v0.1 \
+    --disaggregated-prefill \
+    --kv-transfer-method nccl \
+    --prefill-tp 4 \
+    --decode-tp 2 \
+    --port 8000

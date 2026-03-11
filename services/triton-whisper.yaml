@@ -1,0 +1,18 @@
+# SkyPilot service: Whisper ASR on Triton (matches existing deployment pattern)
+service:
+  replicas:
+    min: 1
+    max: 8
+  readiness_probe:
+    path: /v2/health/ready
+    initial_delay_seconds: 60
+
+resources:
+  accelerators: A100:1
+  memory: 32+
+  image_id: appsprodacr.azurecr.io/inference/flash/deployment-trt-flash-release:v0.17dev2024121700_v5
+
+run: |
+  tritonserver \
+    --model-repository=/models \
+    --http-port=8000

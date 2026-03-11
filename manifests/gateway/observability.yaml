@@ -1,0 +1,189 @@
+# Observability stack for the inference platform
+---
+# Namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
+---
+# Prometheus ServiceMonitor for vLLM pods
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: vllm-metrics
+  namespace: monitoring
+  labels:
+    release: prometheus
+spec:
+  namespaceSelector:
+    matchNames: []  # all tenant namespaces
+  selector:
+    matchLabels:
+      inference.detoserve.ai/runtime: vllm
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
+---
+# ServiceMonitor for Smart Router
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: smart-router-metrics
+  namespace: monitoring
+spec:
+  namespaceSelector:
+    matchNames:
+      - detoserve-system
+  selector:
+    matchLabels:
+      app: smart-router
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 10s
+---
+# DCGM Exporter DaemonSet for GPU metrics
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: dcgm-exporter
+  namespace: monitoring
+spec:
+  selector:
+    matchLabels:
+      app: dcgm-exporter
+  template:
+    metadata:
+      labels:
+        app: dcgm-exporter
+    spec:
+      nodeSelector:
+        nvidia.com/gpu.present: "true"
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: dcgm-exporter
+          image: nvcr.io/nvidia/k8s/dcgm-exporter:3.3.5-3.4.1-ubuntu22.04
+          ports:
+            - containerPort: 9400
+              name: metrics
+          securityContext:
+            runAsNonRoot: false
+            runAsUser: 0
+          volumeMounts:
+            - name: pod-resources
+              mountPath: /var/lib/kubelet/pod-resources
+              readOnly: true
+      volumes:
+        - name: pod-resources
+          hostPath:
+            path: /var/lib/kubelet/pod-resources
+---
+# ServiceMonitor for DCGM
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: dcgm-exporter
+  namespace: monitoring
+spec:
+  selector:
+    matchLabels:
+      app: dcgm-exporter
+  endpoints:
+    - port: metrics
+      interval: 15s
+---
+# Grafana Dashboard ConfigMap (key panels)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: inference-dashboard
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+data:
+  inference-overview.json: |
+    {
+      "dashboard": {
+        "title": "DetoServe Inference Platform",
+        "panels": [
+          {
+            "title": "Requests / sec (all clusters)",
+            "type": "timeseries",
+            "targets": [{"expr": "sum(rate(vllm_request_success_total[5m]))"}]
+          },
+          {
+            "title": "P99 Latency",
+            "type": "timeseries",
+            "targets": [{"expr": "histogram_quantile(0.99, rate(vllm_request_duration_seconds_bucket[5m]))"}]
+          },
+          {
+            "title": "GPU Utilization (all nodes)",
+            "type": "gauge",
+            "targets": [{"expr": "avg(DCGM_FI_DEV_GPU_UTIL)"}]
+          },
+          {
+            "title": "Queue Depth (per model)",
+            "type": "timeseries",
+            "targets": [{"expr": "sum by (model_name) (vllm_request_queue_size)"}]
+          },
+          {
+            "title": "KV Cache Hit Rate",
+            "type": "stat",
+            "targets": [{"expr": "sum(rate(smart_router_cache_hits_total[5m])) / sum(rate(smart_router_requests_total[5m]))"}]
+          },
+          {
+            "title": "Tokens / sec (per tenant)",
+            "type": "timeseries",
+            "targets": [{"expr": "sum by (tenant) (rate(vllm_generation_tokens_total[5m]))"}]
+          }
+        ]
+      }
+    }
+---
+# PrometheusRule for alerting
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: inference-alerts
+  namespace: monitoring
+spec:
+  groups:
+    - name: inference.rules
+      rules:
+        - alert: HighInferenceLatency
+          expr: |
+            (rate(vllm_request_duration_seconds_sum[5m])
+            / rate(vllm_request_duration_seconds_count[5m])) > 0.5
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Inference latency > 500ms"
+
+        - alert: GPUSaturation
+          expr: avg_over_time(DCGM_FI_DEV_GPU_UTIL[5m]) > 90
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "GPU utilization > 90% for 5 minutes"
+
+        - alert: HighQueueDepth
+          expr: vllm_request_queue_size > 50
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: "vLLM request queue > 50"
+
+        - alert: ClusterOffline
+          expr: up{job="cluster-agent"} == 0
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Cluster agent is offline"

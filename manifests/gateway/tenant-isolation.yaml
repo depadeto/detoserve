@@ -1,0 +1,102 @@
+# Multi-tenant isolation resources
+# Apply per tenant namespace
+---
+# Namespace template (create one per tenant)
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tenant-TENANT_ID
+  labels:
+    inference.detoserve.ai/tenant: TENANT_ID
+---
+# Resource quota per tenant
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: tenant-gpu-quota
+  namespace: tenant-TENANT_ID
+spec:
+  hard:
+    requests.nvidia.com/gpu: "8"     # max GPUs for this tenant
+    limits.nvidia.com/gpu: "8"
+    requests.cpu: "64"
+    requests.memory: "256Gi"
+    pods: "50"
+---
+# Network policy: tenant pods can only talk to each other
+# and to the control plane namespace
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: tenant-isolation
+  namespace: tenant-TENANT_ID
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow traffic from API gateway
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: detoserve-system
+    # Allow traffic within same namespace
+    - from:
+        - podSelector: {}
+  egress:
+    # Allow DNS
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: UDP
+          port: 53
+    # Allow control plane access
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: detoserve-system
+    # Allow model storage access (S3/external)
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 443
+    # Allow within namespace
+    - to:
+        - podSelector: {}
+---
+# RBAC: tenant service account can only access own namespace
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: tenant-sa
+  namespace: tenant-TENANT_ID
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: tenant-role
+  namespace: tenant-TENANT_ID
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "services", "configmaps"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: tenant-binding
+  namespace: tenant-TENANT_ID
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: tenant-role
+subjects:
+  - kind: ServiceAccount
+    name: tenant-sa
+    namespace: tenant-TENANT_ID

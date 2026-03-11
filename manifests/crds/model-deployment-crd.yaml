@@ -1,0 +1,180 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: modeldeployments.inference.detoserve.ai
+spec:
+  group: inference.detoserve.ai
+  names:
+    kind: ModelDeployment
+    listKind: ModelDeploymentList
+    plural: modeldeployments
+    singular: modeldeployment
+    shortNames:
+      - mdeploy
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [model, runtime, resources]
+              properties:
+                model:
+                  type: object
+                  required: [uri]
+                  properties:
+                    uri:
+                      type: string
+                      description: "Model location (s3://, hf://, oci://)"
+                    format:
+                      type: string
+                      enum: [huggingface, onnx, tensorrt, safetensors]
+                      default: huggingface
+                    quantization:
+                      type: string
+                      enum: [fp32, fp16, bf16, fp8, int8, int4, awq, gptq]
+                runtime:
+                  type: object
+                  required: [engine]
+                  properties:
+                    engine:
+                      type: string
+                      enum: [vllm, llm-d, triton, dynamo, custom]
+                    tensorParallel:
+                      type: integer
+                      minimum: 1
+                      default: 1
+                    pipelineParallel:
+                      type: integer
+                      minimum: 1
+                      default: 1
+                    maxModelLen:
+                      type: integer
+                      default: 8192
+                    image:
+                      type: string
+                      description: "Custom container image override"
+                    extraArgs:
+                      type: array
+                      items:
+                        type: string
+                resources:
+                  type: object
+                  required: [gpuCount]
+                  properties:
+                    gpu:
+                      type: string
+                      default: "nvidia.com/gpu"
+                    gpuCount:
+                      type: integer
+                      minimum: 1
+                    gpuMemory:
+                      type: string
+                    cpu:
+                      type: string
+                      default: "16"
+                    memory:
+                      type: string
+                      default: "64Gi"
+                scaling:
+                  type: object
+                  properties:
+                    minReplicas:
+                      type: integer
+                      minimum: 0
+                      default: 1
+                    maxReplicas:
+                      type: integer
+                      minimum: 1
+                      default: 10
+                    metric:
+                      type: string
+                      enum: [queue_depth, latency, gpu_utilization, tokens_per_sec]
+                      default: queue_depth
+                    targetValue:
+                      type: integer
+                      default: 10
+                routing:
+                  type: object
+                  properties:
+                    prefixCaching:
+                      type: boolean
+                      default: true
+                    sessionAffinity:
+                      type: boolean
+                      default: true
+                    weight:
+                      type: integer
+                      minimum: 0
+                      maximum: 100
+                      default: 100
+                clusters:
+                  type: array
+                  items:
+                    type: string
+                  description: "Target cluster IDs for this deployment"
+            status:
+              type: object
+              properties:
+                phase:
+                  type: string
+                  enum: [Pending, Deploying, Running, Failed, Stopped]
+                replicas:
+                  type: integer
+                readyReplicas:
+                  type: integer
+                clusterStatuses:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      clusterId:
+                        type: string
+                      phase:
+                        type: string
+                      replicas:
+                        type: integer
+                      readyReplicas:
+                        type: integer
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                      reason:
+                        type: string
+                      message:
+                        type: string
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Engine
+          type: string
+          jsonPath: .spec.runtime.engine
+        - name: GPUs
+          type: integer
+          jsonPath: .spec.resources.gpuCount
+        - name: Replicas
+          type: integer
+          jsonPath: .status.replicas
+        - name: Ready
+          type: integer
+          jsonPath: .status.readyReplicas
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp

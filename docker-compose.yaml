@@ -1,0 +1,79 @@
+# Local development environment — SkyPilot + Function-based architecture
+# Run: docker compose up
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  smart-router:
+    build: ./control-plane/smart-router
+    ports:
+      - "8080:8080"
+    environment:
+      PORT: "8080"
+      REDIS_ADDR: redis:6379
+    depends_on:
+      - redis
+
+  tenant-manager:
+    build: ./control-plane/tenant-manager
+    ports:
+      - "8083:8083"
+    environment:
+      PORT: "8083"
+
+  skypilot-bridge:
+    build: ./control-plane/skypilot-bridge
+    ports:
+      - "8085:8085"
+    environment:
+      PORT: "8085"
+      SERVICES_DIR: /app/services
+    volumes:
+      - ./services:/app/services
+      - ~/.aws:/root/.aws:ro
+      - ~/.config/gcloud:/root/.config/gcloud:ro
+      - ~/.kube:/root/.kube:ro
+      - ~/.sky:/root/.sky
+
+  deployment-manager:
+    build: ./control-plane/deployment-manager
+    ports:
+      - "8082:8082"
+    environment:
+      PORT: "8082"
+      SKYPILOT_BRIDGE_URL: http://skypilot-bridge:8085
+    depends_on:
+      - skypilot-bridge
+
+  function-manager:
+    build: ./control-plane/function-manager
+    ports:
+      - "8086:8086"
+    environment:
+      PORT: "8086"
+      CONFIG_STORE_URL: http://config-store:8087
+    depends_on:
+      - config-store
+
+  config-store:
+    build: ./control-plane/config-store
+    ports:
+      - "8087:8087"
+    environment:
+      PORT: "8087"
+      STORAGE_DIR: /data/configs
+    volumes:
+      - config-data:/data/configs
+
+  # Frontend dev server (run separately with npm run dev for hot reload)
+  # Or build and serve statically:
+  # frontend:
+  #   build: ./frontend
+  #   ports:
+  #     - "3000:3000"
+
+volumes:
+  config-data:
