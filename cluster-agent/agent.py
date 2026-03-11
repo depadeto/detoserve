@@ -53,6 +53,32 @@ def detect_provider(ctx):
     return "Kubernetes"
 
 
+def _get_gpu_usage_per_node():
+    """Query all non-terminal pods and sum GPU requests per node."""
+    usage = {}
+    try:
+        r = subprocess.run(
+            ["kubectl", "get", "pods", "--all-namespaces", "--field-selector=status.phase!=Succeeded,status.phase!=Failed", "-o", "json"],
+            capture_output=True, text=True, timeout=15,
+        )
+        if r.returncode != 0:
+            return usage
+        pods = json.loads(r.stdout)
+        for pod in pods.get("items", []):
+            node_name = pod.get("spec", {}).get("nodeName", "")
+            if not node_name:
+                continue
+            for container in pod.get("spec", {}).get("containers", []):
+                req = container.get("resources", {}).get("requests", {})
+                gpu_req = req.get("nvidia.com/gpu", "0")
+                gpu_val = int(gpu_req) if str(gpu_req).isdigit() else 0
+                if gpu_val > 0:
+                    usage[node_name] = usage.get(node_name, 0) + gpu_val
+    except Exception as e:
+        print(f"[discover] pod GPU scan error: {e}")
+    return usage
+
+
 def discover():
     global state
     cluster_id = CLUSTER_ID or detect_cluster_id()
@@ -69,6 +95,8 @@ def discover():
         print(f"[discover] error: {e}")
         return
 
+    gpu_used_per_node = _get_gpu_usage_per_node()
+
     nodes = []
     total_gpus = 0
     avail_gpus = 0
@@ -83,8 +111,10 @@ def discover():
         conditions = st.get("conditions", [])
         ni = st.get("nodeInfo", {})
 
+        node_name = meta.get("name", "")
         gpu_cap = int(cap.get("nvidia.com/gpu", "0"))
-        gpu_alloc = int(alloc.get("nvidia.com/gpu", "0"))
+        gpu_used = gpu_used_per_node.get(node_name, 0)
+        gpu_free = max(0, gpu_cap - gpu_used)
 
         ready = any(c["type"] == "Ready" and c["status"] == "True" for c in conditions)
 
@@ -101,27 +131,28 @@ def discover():
         gpu_family = labels.get("nvidia.com/gpu.family", "")
 
         node = {
-            "name": meta.get("name", ""),
+            "name": node_name,
             "status": "Ready" if ready else "NotReady",
             "role": role,
             "cpu": cap.get("cpu", "0"),
             "memory_gb": mem_gb,
             "gpu_type": gpu_type,
             "gpu_count": gpu_cap,
-            "gpu_available": gpu_alloc,
+            "gpu_used": gpu_used,
+            "gpu_available": gpu_free,
             "gpu_family": gpu_family,
             "k8s_version": ni.get("kubeletVersion", ""),
             "container_runtime": ni.get("containerRuntimeVersion", ""),
         }
         nodes.append(node)
         total_gpus += gpu_cap
-        avail_gpus += gpu_alloc
+        avail_gpus += gpu_free
 
         if gpu_type:
             if gpu_type not in gpu_map:
                 gpu_map[gpu_type] = {"name": gpu_type, "family": gpu_family, "count": 0, "available": 0}
             gpu_map[gpu_type]["count"] += gpu_cap
-            gpu_map[gpu_type]["available"] += gpu_alloc
+            gpu_map[gpu_type]["available"] += gpu_free
 
     k8s_version = nodes[0]["k8s_version"] if nodes else ""
 

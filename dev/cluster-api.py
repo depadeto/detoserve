@@ -11,6 +11,30 @@ import subprocess
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 
+def _get_gpu_usage_per_node():
+    """Sum GPU requests from all running pods, grouped by node."""
+    usage = {}
+    try:
+        r = subprocess.run(
+            ["kubectl", "get", "pods", "--all-namespaces",
+             "--field-selector=status.phase!=Succeeded,status.phase!=Failed", "-o", "json"],
+            capture_output=True, text=True, timeout=15)
+        if r.returncode != 0:
+            return usage
+        for pod in json.loads(r.stdout).get("items", []):
+            node_name = pod.get("spec", {}).get("nodeName", "")
+            if not node_name:
+                continue
+            for c in pod.get("spec", {}).get("containers", []):
+                gpu_req = c.get("resources", {}).get("requests", {}).get("nvidia.com/gpu", "0")
+                gpu_val = int(gpu_req) if str(gpu_req).isdigit() else 0
+                if gpu_val > 0:
+                    usage[node_name] = usage.get(node_name, 0) + gpu_val
+    except Exception:
+        pass
+    return usage
+
+
 def get_cluster_state():
     result = subprocess.run(["kubectl", "get", "nodes", "-o", "json"], capture_output=True, text=True)
     if result.returncode != 0:
@@ -19,6 +43,8 @@ def get_cluster_state():
     data = json.loads(result.stdout)
     ctx = subprocess.run(["kubectl", "config", "current-context"], capture_output=True, text=True)
     cluster_id = ctx.stdout.strip() if ctx.returncode == 0 else "unknown"
+
+    gpu_used_per_node = _get_gpu_usage_per_node()
 
     nodes = []
     total_gpus = 0
@@ -30,12 +56,14 @@ def get_cluster_state():
         labels = meta.get("labels", {})
         status = item.get("status", {})
         cap = status.get("capacity", {})
-        alloc = status.get("allocatable", {})
         conditions = status.get("conditions", [])
         node_info = status.get("nodeInfo", {})
 
+        node_name = meta["name"]
         gpu_cap = int(cap.get("nvidia.com/gpu", "0"))
-        gpu_alloc = int(alloc.get("nvidia.com/gpu", "0"))
+        gpu_used = gpu_used_per_node.get(node_name, 0)
+        gpu_free = max(0, gpu_cap - gpu_used)
+
         ready = any(c["type"] == "Ready" and c["status"] == "True" for c in conditions)
         role = "worker"
         for k in labels:
@@ -49,27 +77,28 @@ def get_cluster_state():
         gpu_family = labels.get("nvidia.com/gpu.family", "")
 
         node = {
-            "name": meta["name"],
+            "name": node_name,
             "status": "Ready" if ready else "NotReady",
             "role": role,
             "cpu": cap.get("cpu", "0"),
             "memory_gb": mem_gb,
             "gpu_type": gpu_type,
             "gpu_count": gpu_cap,
-            "gpu_available": gpu_alloc,
+            "gpu_used": gpu_used,
+            "gpu_available": gpu_free,
             "gpu_family": gpu_family,
             "k8s_version": node_info.get("kubeletVersion", ""),
             "container_runtime": node_info.get("containerRuntimeVersion", ""),
         }
         nodes.append(node)
         total_gpus += gpu_cap
-        available_gpus += gpu_alloc
+        available_gpus += gpu_free
 
         if gpu_type:
             if gpu_type not in gpu_map:
                 gpu_map[gpu_type] = {"name": gpu_type, "family": gpu_family, "count": 0, "available": 0}
             gpu_map[gpu_type]["count"] += gpu_cap
-            gpu_map[gpu_type]["available"] += gpu_alloc
+            gpu_map[gpu_type]["available"] += gpu_free
 
     provider = "Kubernetes"
     if cluster_id.startswith("k3d-"):
