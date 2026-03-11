@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react'
+import SwaggerUI from 'swagger-ui-react'
+import 'swagger-ui-react/swagger-ui.css'
 
 const API = '/api'
 
@@ -125,6 +127,8 @@ function App() {
             onClick={() => { setPage('functions'); setSelectedFn(null) }}>Functions</button>
           <button className={`topnav-tab ${page === 'instances' ? 'active' : ''}`}
             onClick={() => { setPage('instances'); fetchInstances() }}>Instances</button>
+          <button className={`topnav-tab ${page === 'docs' ? 'active' : ''}`}
+            onClick={() => { setPage('docs'); setSelectedFn(null) }}>API Docs</button>
         </div>
       </nav>
 
@@ -150,6 +154,12 @@ function App() {
 
         {page === 'instances' && (
           <InstancesPage instances={instances} />
+        )}
+
+        {page === 'docs' && (
+          <div style={{ padding: '20px', background: '#fff', minHeight: '100%', borderRadius: '8px' }}>
+            <SwaggerUI url="/openapi.yaml" />
+          </div>
         )}
       </main>
 
