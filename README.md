@@ -94,6 +94,12 @@ Global view of all running deployments across clusters.
 
 ![All Instances](docs/screenshots/08-all-instances.png)
 
+### Clusters Dashboard
+Live GPU infrastructure view — discover nodes, GPU types, availability, and utilization.
+
+![Clusters Dashboard](docs/screenshots/09-clusters-top.png)
+![Cluster Nodes](docs/screenshots/09-clusters-dashboard.png)
+
 ---
 
 ### What SkyPilot Handles vs. What We Build

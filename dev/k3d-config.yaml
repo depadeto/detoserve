@@ -1,0 +1,54 @@
+apiVersion: k3d.io/v1alpha5
+kind: Simple
+metadata:
+  name: detoserve-dev
+
+image: rancher/k3s:v1.30.2-k3s2
+servers: 1
+agents: 3
+
+ports:
+  - port: 8080:80
+    nodeFilters:
+      - loadbalancer
+  - port: 8443:443
+    nodeFilters:
+      - loadbalancer
+
+options:
+  k3d:
+    wait: true
+  k3s:
+    extraArgs:
+      - arg: "--disable=traefik"
+        nodeFilters:
+          - server:*
+    nodeLabels:
+      - label: run.ai/simulated-gpu-node-pool=default
+        nodeFilters:
+          - agent:0
+          - agent:1
+      - label: nvidia.com/gpu.family=hopper
+        nodeFilters:
+          - agent:0
+          - agent:1
+      - label: nvidia.com/gpu.machine=NVIDIA-DGX-H100
+        nodeFilters:
+          - agent:0
+          - agent:1
+      - label: nvidia.com/cuda.driver.major=535
+        nodeFilters:
+          - agent:0
+          - agent:1
+      - label: run.ai/simulated-gpu-node-pool=a100-pool
+        nodeFilters:
+          - agent:2
+      - label: nvidia.com/gpu.family=ampere
+        nodeFilters:
+          - agent:2
+      - label: nvidia.com/gpu.machine=NVIDIA-A100-SXM4-80GB
+        nodeFilters:
+          - agent:2
+      - label: nvidia.com/cuda.driver.major=535
+        nodeFilters:
+          - agent:2

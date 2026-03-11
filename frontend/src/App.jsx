@@ -125,6 +125,8 @@ function App() {
             onClick={() => { setPage('functions'); setSelectedFn(null) }}>Functions</button>
           <button className={`topnav-tab ${page === 'instances' ? 'active' : ''}`}
             onClick={() => { setPage('instances'); fetchInstances() }}>Instances</button>
+          <button className={`topnav-tab ${page === 'clusters' ? 'active' : ''}`}
+            onClick={() => setPage('clusters')}>Clusters</button>
         </div>
       </nav>
 
@@ -150,6 +152,10 @@ function App() {
 
         {page === 'instances' && (
           <InstancesPage instances={instances} />
+        )}
+
+        {page === 'clusters' && (
+          <ClustersPage />
         )}
       </main>
 
@@ -512,6 +518,130 @@ function DeployModal({ fn, onClose, onSubmit }) {
         </div>
       </div>
     </div>
+  )
+}
+
+function ClustersPage() {
+  const [data, setData] = useState(null)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    const fetchClusters = async () => {
+      try {
+        const res = await fetch('/api/clusters')
+        const json = await res.json()
+        setData(json)
+      } catch {
+        setData(null)
+      }
+      setLoading(false)
+    }
+    fetchClusters()
+    const interval = setInterval(fetchClusters, 5000)
+    return () => clearInterval(interval)
+  }, [])
+
+  if (loading) return <div className="empty-state"><div className="empty-icon">...</div><div>Loading cluster data...</div></div>
+
+  if (!data || data.error) return (
+    <div className="empty-state">
+      <div className="empty-icon">!</div>
+      <div>Could not connect to cluster. Make sure the cluster API is running.</div>
+    </div>
+  )
+
+  const { cluster, nodes } = data
+  const gpuNodes = nodes.filter(n => n.gpu.count > 0)
+
+  return (
+    <>
+      <div className="page-header">
+        <div>
+          <h2>Clusters</h2>
+          <p className="subtitle">GPU infrastructure overview</p>
+        </div>
+      </div>
+
+      <div className="cluster-overview">
+        <div className="cluster-header-card">
+          <div className="cluster-header-top">
+            <div>
+              <h3>{cluster.name}</h3>
+              <span className="subtitle">{cluster.provider} &middot; {cluster.k8s_version}</span>
+            </div>
+            <span className={`status-badge status-${cluster.status}`}>{cluster.status}</span>
+          </div>
+          <div className="cluster-stats">
+            <div className="stat-card">
+              <div className="stat-value">{cluster.total_gpus}</div>
+              <div className="stat-label">Total GPUs</div>
+            </div>
+            <div className="stat-card">
+              <div className="stat-value stat-green">{cluster.available_gpus}</div>
+              <div className="stat-label">Available</div>
+            </div>
+            <div className="stat-card">
+              <div className="stat-value">{cluster.total_gpus - cluster.available_gpus}</div>
+              <div className="stat-label">In Use</div>
+            </div>
+            <div className="stat-card">
+              <div className="stat-value">{cluster.node_count}</div>
+              <div className="stat-label">Nodes</div>
+            </div>
+            <div className="stat-card">
+              <div className="stat-value">{cluster.gpu_node_count}</div>
+              <div className="stat-label">GPU Nodes</div>
+            </div>
+          </div>
+        </div>
+
+        <h3 className="section-title">GPU Types</h3>
+        <div className="gpu-types-grid">
+          {Object.entries(cluster.gpu_types).map(([name, info]) => (
+            <div key={name} className="gpu-type-card">
+              <div className="gpu-type-name">{name.replace('NVIDIA-', '').replace('SXM4-', '')}</div>
+              <div className="gpu-type-details">
+                <span className="badge badge-gpu">{info.count} GPUs</span>
+                <span className="badge">{info.family}</span>
+                <span className="badge badge-available">{info.available} available</span>
+              </div>
+              <div className="gpu-bar">
+                <div className="gpu-bar-fill" style={{ width: `${info.count > 0 ? ((info.count - info.available) / info.count) * 100 : 0}%` }}></div>
+              </div>
+              <div className="gpu-bar-label">{info.count - info.available} / {info.count} in use</div>
+            </div>
+          ))}
+        </div>
+
+        <h3 className="section-title">Nodes</h3>
+        <div className="nodes-list">
+          {nodes.map(node => (
+            <div key={node.name} className={`node-card ${node.gpu.count > 0 ? 'node-gpu' : ''}`}>
+              <div className="node-header">
+                <div className="node-info">
+                  <span className={`status-dot ${node.status === 'Ready' ? 'status-dot-green' : 'status-dot-red'}`}></span>
+                  <strong>{node.name}</strong>
+                  <span className="node-role">{node.roles.join(', ')}</span>
+                </div>
+                {node.gpu.count > 0 && (
+                  <div className="node-gpu-badges">
+                    <span className="badge badge-gpu">{node.gpu.count}x GPU</span>
+                    <span className="badge">{node.gpu.machine?.replace('NVIDIA-', '') || 'Unknown'}</span>
+                    <span className="badge">{node.gpu.family}</span>
+                  </div>
+                )}
+              </div>
+              <div className="node-details">
+                <span>CPU: {node.cpu}</span>
+                <span>Memory: {(parseInt(node.memory) / 1024 / 1024).toFixed(1)} GB</span>
+                <span>{node.k8s_version}</span>
+                {node.gpu.pool && <span>Pool: {node.gpu.pool}</span>}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </>
   )
 }
 

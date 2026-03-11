@@ -280,3 +280,86 @@ body {
 
 .empty-icon { font-size: 40px; margin-bottom: 12px; opacity: 0.3; }
 .empty-text { font-size: 15px; margin-bottom: 16px; }
+
+/* Clusters Page */
+.cluster-overview { display: flex; flex-direction: column; gap: 24px; }
+
+.cluster-header-card {
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 12px;
+  padding: 24px;
+}
+.cluster-header-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 20px;
+}
+.cluster-header-top h3 { font-size: 22px; margin: 0; }
+
+.cluster-stats {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 12px;
+}
+.stat-card {
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 10px;
+  padding: 16px;
+  text-align: center;
+}
+.stat-value { font-size: 32px; font-weight: 700; color: #fff; }
+.stat-value.stat-green { color: #4ade80; }
+.stat-label { font-size: 12px; text-transform: uppercase; letter-spacing: 1px; color: #888; margin-top: 4px; }
+
+.section-title { font-size: 16px; text-transform: uppercase; letter-spacing: 1px; color: #aaa; margin: 0; }
+
+.gpu-types-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+.gpu-type-card {
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 10px;
+  padding: 20px;
+}
+.gpu-type-name { font-size: 18px; font-weight: 600; margin-bottom: 10px; }
+.gpu-type-details { display: flex; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; }
+.gpu-bar {
+  height: 8px;
+  background: rgba(255,255,255,0.08);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.gpu-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #6366f1, #818cf8);
+  border-radius: 4px;
+  transition: width 0.5s ease;
+}
+.gpu-bar-label { font-size: 12px; color: #888; margin-top: 6px; }
+
+.badge { display: inline-block; padding: 3px 10px; border-radius: 12px; font-size: 12px; background: rgba(255,255,255,0.08); color: #ccc; }
+.badge-gpu { background: rgba(99,102,241,0.2); color: #a5b4fc; }
+.badge-available { background: rgba(74,222,128,0.15); color: #4ade80; }
+
+.nodes-list { display: flex; flex-direction: column; gap: 8px; }
+.node-card {
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 10px;
+  padding: 14px 20px;
+}
+.node-card.node-gpu { border-left: 3px solid #6366f1; }
+.node-header { display: flex; justify-content: space-between; align-items: center; }
+.node-info { display: flex; align-items: center; gap: 10px; }
+.node-role { font-size: 12px; color: #888; background: rgba(255,255,255,0.06); padding: 2px 8px; border-radius: 8px; }
+.node-gpu-badges { display: flex; gap: 6px; }
+.node-details { display: flex; gap: 16px; margin-top: 8px; font-size: 13px; color: #888; }
+
+.status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; }
+.status-dot-green { background: #4ade80; box-shadow: 0 0 6px rgba(74,222,128,0.5); }
+.status-dot-red { background: #f87171; box-shadow: 0 0 6px rgba(248,113,113,0.5); }
+
+.status-badge { padding: 4px 12px; border-radius: 12px; font-size: 13px; font-weight: 600; text-transform: uppercase; }
+.status-badge.status-healthy { background: rgba(74,222,128,0.15); color: #4ade80; }
