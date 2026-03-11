@@ -3,9 +3,14 @@ Function Manager — Python FastAPI equivalent of main.go
 
 A "Function" is a reusable template: define once, deploy many times.
 An "Instance" is a running deployment of that function on a specific cluster.
+
+When deploying, actually creates Kubernetes Deployments with GPU requests
+and schedules them via KAI Scheduler.
 """
 
+import json
 import os
+import subprocess
 import time
 import threading
 from datetime import datetime, timezone
@@ -98,16 +103,160 @@ def _now():
     return datetime.now(timezone.utc).isoformat()
 
 
-# --- Simulated status progression ---
+# --- Kubernetes deployment ---
 
-def _progress_instance(inst_id: str):
-    """Simulate deployment progressing from deploying -> running."""
-    time.sleep(5)
+def _k8s_deploy(inst_id: str, fn: dict, deploy_config: dict):
+    """Create a real Kubernetes Deployment with GPU requests via KAI Scheduler."""
+    name = f"detoserve-{fn['name']}-{inst_id[-6:]}"
+    namespace = f"tenant-{deploy_config.get('tenant_id', 'default')}"
+    gpu_count = fn.get("resources", {}).get("gpu_count", 1)
+    model_uri = fn.get("model_uri", "unknown")
+    runtime = fn.get("runtime", "vllm")
+    replicas = fn.get("scaling", {}).get("min_replicas", 1)
+
+    # Ensure namespace exists
+    subprocess.run(["kubectl", "create", "namespace", namespace],
+                   capture_output=True, timeout=10)
+
+    # Label namespace for KAI Scheduler queue
+    subprocess.run(["kubectl", "label", "namespace", namespace,
+                     "kai-scheduler-queue=inference-queue", "--overwrite"],
+                   capture_output=True, timeout=10)
+
+    manifest = {
+        "apiVersion": "apps/v1",
+        "kind": "Deployment",
+        "metadata": {
+            "name": name,
+            "namespace": namespace,
+            "labels": {
+                "app.kubernetes.io/name": name,
+                "app.kubernetes.io/managed-by": "detoserve",
+                "detoserve/function-id": fn.get("id", ""),
+                "detoserve/instance-id": inst_id,
+                "detoserve/runtime": runtime,
+            },
+        },
+        "spec": {
+            "replicas": replicas,
+            "selector": {"matchLabels": {"app.kubernetes.io/name": name}},
+            "template": {
+                "metadata": {
+                    "labels": {
+                        "app.kubernetes.io/name": name,
+                        "detoserve/function-id": fn.get("id", ""),
+                        "detoserve/instance-id": inst_id,
+                    },
+                },
+                "spec": {
+                    "schedulerName": os.getenv("SCHEDULER_NAME", "default-scheduler"),
+                    "containers": [{
+                        "name": "inference",
+                        "image": "python:3.11-slim",
+                        "command": ["python3", "-c", f"""
+import http.server, json, threading, time
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == '/health':
+            self.send_response(200)
+            self.send_header('Content-Type','application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({{"status":"healthy","model":"{model_uri}","runtime":"{runtime}","gpu_count":{gpu_count}}}).encode())
+        elif self.path == '/v1/models':
+            self.send_response(200)
+            self.send_header('Content-Type','application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({{"data":[{{"id":"{model_uri}","object":"model"}}]}}).encode())
+        else:
+            self.send_response(200)
+            self.send_header('Content-Type','application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({{"message":"DetoServe dummy inference server","model":"{model_uri}"}}).encode())
+    def log_message(self, *a): pass
+print(f'Dummy inference server for {model_uri} starting on :8000')
+http.server.HTTPServer(('',8000),H).serve_forever()
+"""],
+                        "ports": [{"containerPort": 8000, "name": "http"}],
+                        "resources": {
+                            "requests": {"nvidia.com/gpu": str(gpu_count), "cpu": "100m", "memory": "256Mi"},
+                            "limits": {"nvidia.com/gpu": str(gpu_count), "cpu": "500m", "memory": "512Mi"},
+                        },
+                        "readinessProbe": {
+                            "httpGet": {"path": "/health", "port": 8000},
+                            "initialDelaySeconds": 5,
+                            "periodSeconds": 10,
+                        },
+                        "livenessProbe": {
+                            "httpGet": {"path": "/health", "port": 8000},
+                            "initialDelaySeconds": 10,
+                            "periodSeconds": 30,
+                        },
+                    }],
+                },
+            },
+        },
+    }
+
+    # Apply via kubectl
+    proc = subprocess.run(
+        ["kubectl", "apply", "-f", "-"],
+        input=json.dumps(manifest),
+        capture_output=True, text=True, timeout=30,
+    )
+
+    if proc.returncode != 0:
+        print(f"[deploy] kubectl apply failed: {proc.stderr}")
+        with _lock:
+            if inst_id in _instances:
+                _instances[inst_id]["status"] = "error"
+                _instances[inst_id]["updated_at"] = _now()
+        return
+
+    print(f"[deploy] Created deployment {name} in {namespace} ({gpu_count} GPUs)")
+
+    # Create a Service for the deployment
+    svc = {
+        "apiVersion": "v1",
+        "kind": "Service",
+        "metadata": {"name": name, "namespace": namespace},
+        "spec": {
+            "selector": {"app.kubernetes.io/name": name},
+            "ports": [{"port": 8000, "targetPort": 8000, "name": "http"}],
+        },
+    }
+    subprocess.run(["kubectl", "apply", "-f", "-"],
+                   input=json.dumps(svc), capture_output=True, text=True, timeout=10)
+
+    # Poll until pods are ready (max 120s)
+    for _ in range(24):
+        time.sleep(5)
+        result = subprocess.run(
+            ["kubectl", "get", "deployment", name, "-n", namespace, "-o", "json"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0:
+            dep = json.loads(result.stdout)
+            ready = dep.get("status", {}).get("readyReplicas", 0)
+            desired = dep.get("spec", {}).get("replicas", replicas)
+            with _lock:
+                if inst_id in _instances:
+                    _instances[inst_id]["replicas"] = ready
+                    _instances[inst_id]["updated_at"] = _now()
+            if ready >= desired:
+                with _lock:
+                    if inst_id in _instances:
+                        _instances[inst_id]["status"] = "running"
+                        _instances[inst_id]["endpoint"] = f"http://{name}.{namespace}.svc:8000"
+                        _instances[inst_id]["updated_at"] = _now()
+                print(f"[deploy] {name} is running ({ready}/{desired} replicas)")
+                return
+
+    # Timeout — mark as partial
     with _lock:
         if inst_id in _instances:
-            _instances[inst_id]["status"] = "running"
-            _instances[inst_id]["endpoint"] = f"https://api.detoserve.ai/v1/{inst_id}"
+            _instances[inst_id]["status"] = "degraded"
             _instances[inst_id]["updated_at"] = _now()
+    print(f"[deploy] {name} timed out waiting for readiness")
 
 
 # --- Endpoints ---
@@ -214,7 +363,7 @@ def deploy_instance(fn_id: str, req: DeployRequest):
     with _lock:
         _instances[inst["id"]] = inst
 
-    threading.Thread(target=_progress_instance, args=(inst["id"],), daemon=True).start()
+    threading.Thread(target=_k8s_deploy, args=(inst["id"], f, req.model_dump()), daemon=True).start()
 
     return inst
 
@@ -239,7 +388,15 @@ def get_instance(inst_id: str):
 @app.delete("/api/instances/{inst_id}")
 def delete_instance(inst_id: str):
     with _lock:
-        _instances.pop(inst_id, None)
+        inst = _instances.pop(inst_id, None)
+    if inst:
+        fn_name = inst.get("function_name", "unknown")
+        namespace = f"tenant-{inst.get('tenant_id', 'default')}"
+        dep_name = f"detoserve-{fn_name}-{inst_id[-6:]}"
+        subprocess.run(["kubectl", "delete", "deployment", dep_name, "-n", namespace, "--ignore-not-found"],
+                       capture_output=True, timeout=15)
+        subprocess.run(["kubectl", "delete", "service", dep_name, "-n", namespace, "--ignore-not-found"],
+                       capture_output=True, timeout=15)
     return {"status": "deleted"}
 
 
