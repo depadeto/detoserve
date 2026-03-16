@@ -1,0 +1,37 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-deployment-manager
+  namespace: {{ .Values.global.namespace }}
+spec:
+  replicas: {{ .Values.deploymentManager.replicaCount }}
+  selector:
+    matchLabels:
+      app: deployment-manager
+  template:
+    metadata:
+      labels:
+        app: deployment-manager
+    spec:
+      containers:
+        - name: deployment-manager
+          image: "{{ .Values.deploymentManager.image.repository }}:{{ .Values.deploymentManager.image.tag }}"
+          ports:
+            - containerPort: {{ .Values.deploymentManager.port }}
+          env:
+            - name: PORT
+              value: {{ .Values.deploymentManager.port | quote }}
+            - name: SKYPILOT_BRIDGE_URL
+              value: {{ .Values.deploymentManager.env.SKYPILOT_BRIDGE_URL | quote }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-deployment-manager
+  namespace: {{ .Values.global.namespace }}
+spec:
+  selector:
+    app: deployment-manager
+  ports:
+    - port: {{ .Values.deploymentManager.port }}
+      targetPort: {{ .Values.deploymentManager.port }}

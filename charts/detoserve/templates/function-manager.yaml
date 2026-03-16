@@ -1,0 +1,37 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-function-manager
+  namespace: {{ .Values.global.namespace }}
+spec:
+  replicas: {{ .Values.functionManager.replicaCount }}
+  selector:
+    matchLabels:
+      app: function-manager
+  template:
+    metadata:
+      labels:
+        app: function-manager
+    spec:
+      containers:
+        - name: function-manager
+          image: "{{ .Values.functionManager.image.repository }}:{{ .Values.functionManager.image.tag }}"
+          ports:
+            - containerPort: {{ .Values.functionManager.port }}
+          env:
+            - name: PORT
+              value: {{ .Values.functionManager.port | quote }}
+            - name: CONFIG_STORE_URL
+              value: {{ .Values.functionManager.env.CONFIG_STORE_URL | quote }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-function-manager
+  namespace: {{ .Values.global.namespace }}
+spec:
+  selector:
+    app: function-manager
+  ports:
+    - port: {{ .Values.functionManager.port }}
+      targetPort: {{ .Values.functionManager.port }}
