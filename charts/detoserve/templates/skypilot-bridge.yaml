@@ -1,0 +1,37 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-skypilot-bridge
+  namespace: {{ .Values.global.namespace }}
+spec:
+  replicas: {{ .Values.skypilotBridge.replicaCount }}
+  selector:
+    matchLabels:
+      app: skypilot-bridge
+  template:
+    metadata:
+      labels:
+        app: skypilot-bridge
+    spec:
+      containers:
+        - name: skypilot-bridge
+          image: "{{ .Values.skypilotBridge.image.repository }}:{{ .Values.skypilotBridge.image.tag }}"
+          ports:
+            - containerPort: {{ .Values.skypilotBridge.port }}
+          env:
+            - name: PORT
+              value: {{ .Values.skypilotBridge.port | quote }}
+            - name: SERVICES_DIR
+              value: {{ .Values.skypilotBridge.env.SERVICES_DIR | quote }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-skypilot-bridge
+  namespace: {{ .Values.global.namespace }}
+spec:
+  selector:
+    app: skypilot-bridge
+  ports:
+    - port: {{ .Values.skypilotBridge.port }}
+      targetPort: {{ .Values.skypilotBridge.port }}

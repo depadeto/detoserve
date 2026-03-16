@@ -1,0 +1,37 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-config-store
+  namespace: {{ .Values.global.namespace }}
+spec:
+  replicas: {{ .Values.configStore.replicaCount }}
+  selector:
+    matchLabels:
+      app: config-store
+  template:
+    metadata:
+      labels:
+        app: config-store
+    spec:
+      containers:
+        - name: config-store
+          image: "{{ .Values.configStore.image.repository }}:{{ .Values.configStore.image.tag }}"
+          ports:
+            - containerPort: {{ .Values.configStore.port }}
+          env:
+            - name: PORT
+              value: {{ .Values.configStore.port | quote }}
+            - name: STORAGE_DIR
+              value: {{ .Values.configStore.env.STORAGE_DIR | quote }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-config-store
+  namespace: {{ .Values.global.namespace }}
+spec:
+  selector:
+    app: config-store
+  ports:
+    - port: {{ .Values.configStore.port }}
+      targetPort: {{ .Values.configStore.port }}

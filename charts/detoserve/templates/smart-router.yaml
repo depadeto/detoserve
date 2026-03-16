@@ -1,0 +1,37 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-smart-router
+  namespace: {{ .Values.global.namespace }}
+spec:
+  replicas: {{ .Values.smartRouter.replicaCount }}
+  selector:
+    matchLabels:
+      app: smart-router
+  template:
+    metadata:
+      labels:
+        app: smart-router
+    spec:
+      containers:
+        - name: smart-router
+          image: "{{ .Values.smartRouter.image.repository }}:{{ .Values.smartRouter.image.tag }}"
+          ports:
+            - containerPort: {{ .Values.smartRouter.port }}
+          env:
+            - name: PORT
+              value: {{ .Values.smartRouter.port | quote }}
+            - name: REDIS_ADDR
+              value: {{ .Values.smartRouter.env.REDIS_ADDR | quote }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-smart-router
+  namespace: {{ .Values.global.namespace }}
+spec:
+  selector:
+    app: smart-router
+  ports:
+    - port: {{ .Values.smartRouter.port }}
+      targetPort: {{ .Values.smartRouter.port }}
