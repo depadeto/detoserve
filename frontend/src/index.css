@@ -363,3 +363,33 @@ body {
 
 .status-badge { padding: 4px 12px; border-radius: 12px; font-size: 13px; font-weight: 600; text-transform: uppercase; }
 .status-badge.status-healthy { background: rgba(74,222,128,0.15); color: #4ade80; }
+.status-badge.status-online { background: rgba(74,222,128,0.15); color: #4ade80; }
+
+/* Swagger UI dark theme overrides */
+.swagger-container { background: var(--bg-card); border-radius: var(--radius); border: 1px solid var(--border); overflow: hidden; }
+.swagger-container .swagger-ui { background: transparent; }
+.swagger-container .swagger-ui .topbar { display: none; }
+.swagger-container .swagger-ui .info .title { color: var(--text); }
+.swagger-container .swagger-ui .info p, .swagger-container .swagger-ui .info li { color: var(--text-dim); }
+.swagger-container .swagger-ui .scheme-container { background: rgba(0,0,0,0.2); border-bottom: 1px solid var(--border); }
+.swagger-container .swagger-ui .opblock-tag { color: var(--text); border-bottom-color: var(--border); }
+.swagger-container .swagger-ui .opblock { border-color: var(--border); background: rgba(0,0,0,0.15); }
+.swagger-container .swagger-ui .opblock .opblock-summary { border-color: var(--border); }
+.swagger-container .swagger-ui .opblock .opblock-summary-description { color: var(--text-dim); }
+.swagger-container .swagger-ui .opblock-description-wrapper p { color: var(--text-dim); }
+.swagger-container .swagger-ui table thead tr td, .swagger-container .swagger-ui table thead tr th { color: var(--text); border-bottom-color: var(--border); }
+.swagger-container .swagger-ui .parameter__name { color: var(--text); }
+.swagger-container .swagger-ui .parameter__type { color: var(--text-dim); }
+.swagger-container .swagger-ui .model-title { color: var(--text); }
+.swagger-container .swagger-ui .model { color: var(--text-dim); }
+.swagger-container .swagger-ui .model-box { background: rgba(0,0,0,0.2); }
+.swagger-container .swagger-ui section.models { border-color: var(--border); }
+.swagger-container .swagger-ui section.models h4 { color: var(--text); border-bottom-color: var(--border); }
+.swagger-container .swagger-ui .response-col_status { color: var(--text); }
+.swagger-container .swagger-ui .response-col_description p { color: var(--text-dim); }
+.swagger-container .swagger-ui .btn { color: var(--text); border-color: var(--border); }
+.swagger-container .swagger-ui select { background: var(--bg); color: var(--text); border-color: var(--border); }
+.swagger-container .swagger-ui input[type=text] { background: var(--bg); color: var(--text); border-color: var(--border); }
+.swagger-container .swagger-ui textarea { background: var(--bg); color: var(--text); border-color: var(--border); }
+.swagger-container .swagger-ui .highlight-code { background: rgba(0,0,0,0.3) !important; }
+.swagger-container .swagger-ui .microlight { background: rgba(0,0,0,0.3) !important; color: var(--text) !important; }

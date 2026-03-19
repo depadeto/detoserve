@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useCallback } from 'react'
+import React, { useState, useEffect, useCallback, lazy, Suspense } from 'react'
+const SwaggerUI = lazy(() => import('swagger-ui-react'))
 
 const API = '/api'
 
@@ -139,6 +140,8 @@ function App() {
             onClick={() => { setPage('instances'); fetchInstances() }}>Instances</button>
           <button className={`topnav-tab ${page === 'clusters' ? 'active' : ''}`}
             onClick={() => setPage('clusters')}>Clusters</button>
+          <button className={`topnav-tab ${page === 'docs' ? 'active' : ''}`}
+            onClick={() => setPage('docs')}>API Docs</button>
         </div>
       </nav>
 
@@ -168,6 +171,10 @@ function App() {
 
         {page === 'clusters' && (
           <ClustersPage />
+        )}
+
+        {page === 'docs' && (
+          <ApiDocsPage />
         )}
       </main>
 
@@ -768,6 +775,30 @@ function ClustersPage() {
             </div>
           )
         })}
+      </div>
+    </>
+  )
+}
+
+function ApiDocsPage() {
+  useEffect(() => {
+    import('swagger-ui-react/swagger-ui.css')
+  }, [])
+
+  return (
+    <>
+      <div className="page-header">
+        <div>
+          <div className="page-title">API Documentation</div>
+          <div className="page-subtitle">OpenAPI 3.0 specification for all DetoServe services</div>
+        </div>
+        <a className="btn btn-primary" href="/openapi.yaml" download>Download OpenAPI Spec</a>
+      </div>
+      <div className="swagger-container">
+        <Suspense fallback={<div style={{ padding: 40, textAlign: 'center', color: 'var(--text-dim)' }}>Loading API docs...</div>}>
+          <SwaggerUI url="/openapi.yaml" docExpansion="list" defaultModelsExpandDepth={1}
+            deepLinking={true} />
+        </Suspense>
       </div>
     </>
   )

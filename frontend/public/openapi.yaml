@@ -1,0 +1,895 @@
+openapi: 3.0.3
+info:
+  title: DetoServe API
+  description: |
+    Unified API for the DetoServe AI inference platform.
+
+    **Services:**
+    - **Function Manager** (`:8086`) — Manage functions and deploy instances via SkyPilot
+    - **API Gateway** (`:8090`) — OpenAI-compatible consumer endpoint with load balancing
+    - **SkyPilot Bridge** (`:8085`) — Cluster registry, GPU discovery, and SkyPilot service management
+  version: 0.2.0
+  license:
+    name: Apache 2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+  contact:
+    name: DetoServe
+    url: https://github.com/depadeto/detoserve
+
+servers:
+  - url: http://localhost:8086
+    description: Function Manager
+  - url: http://localhost:8090
+    description: API Gateway
+  - url: http://localhost:8085
+    description: SkyPilot Bridge
+
+tags:
+  - name: Functions
+    description: Define reusable inference workload templates
+  - name: Instances
+    description: Deploy and manage running inference instances
+  - name: Gateway
+    description: Consumer-facing OpenAI-compatible inference API
+  - name: Clusters
+    description: Cluster registration and GPU discovery
+  - name: Services
+    description: SkyPilot service management
+  - name: Health
+    description: Health checks
+
+paths:
+  # ── Function Manager ─────────────────────────────────────────────
+  /api/functions:
+    post:
+      tags: [Functions]
+      summary: Create a function
+      operationId: createFunction
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FunctionInput'
+      responses:
+        '201':
+          description: Function created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Function'
+        '400':
+          description: Invalid request
+    get:
+      tags: [Functions]
+      summary: List all functions
+      operationId: listFunctions
+      responses:
+        '200':
+          description: Array of functions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Function'
+
+  /api/functions/{id}:
+    parameters:
+      - $ref: '#/components/parameters/FunctionId'
+    get:
+      tags: [Functions]
+      summary: Get function detail
+      operationId: getFunction
+      responses:
+        '200':
+          description: Function detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Function'
+        '404':
+          description: Function not found
+    put:
+      tags: [Functions]
+      summary: Update a function
+      operationId: updateFunction
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FunctionInput'
+      responses:
+        '200':
+          description: Function updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Function'
+        '404':
+          description: Function not found
+    delete:
+      tags: [Functions]
+      summary: Delete a function
+      operationId: deleteFunction
+      responses:
+        '200':
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: deleted
+        '404':
+          description: Function not found
+
+  /api/functions/{id}/deploy:
+    parameters:
+      - $ref: '#/components/parameters/FunctionId'
+    post:
+      tags: [Instances]
+      summary: Deploy a function instance
+      description: |
+        Creates a running instance of a function. Triggers SkyPilot `sky launch`
+        in the background and discovers the endpoint once ready.
+      operationId: deployFunction
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeployInput'
+      responses:
+        '201':
+          description: Instance created (deploying in background)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Instance'
+        '400':
+          description: Invalid request
+        '404':
+          description: Function not found
+
+  /api/instances:
+    get:
+      tags: [Instances]
+      summary: List instances
+      operationId: listInstances
+      parameters:
+        - name: function_id
+          in: query
+          schema:
+            type: string
+          description: Filter by function ID
+      responses:
+        '200':
+          description: Array of instances
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Instance'
+
+  /api/instances/seed:
+    post:
+      tags: [Instances]
+      summary: Seed a pre-existing instance
+      description: |
+        Manually register a running instance (e.g. after service restart)
+        without triggering a new deployment.
+      operationId: seedInstance
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SeedInstanceInput'
+      responses:
+        '201':
+          description: Instance registered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Instance'
+
+  /api/instances/{id}:
+    parameters:
+      - $ref: '#/components/parameters/InstanceId'
+    get:
+      tags: [Instances]
+      summary: Get instance detail
+      operationId: getInstance
+      responses:
+        '200':
+          description: Instance detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Instance'
+        '404':
+          description: Instance not found
+    patch:
+      tags: [Instances]
+      summary: Patch instance fields
+      description: Partial update — set endpoint, status, or cluster.
+      operationId: patchInstance
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                endpoint:
+                  type: string
+                status:
+                  type: string
+                cluster:
+                  type: string
+      responses:
+        '200':
+          description: Instance updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Instance'
+        '404':
+          description: Instance not found
+    delete:
+      tags: [Instances]
+      summary: Delete an instance
+      description: |
+        Removes the instance. If deployed via SkyPilot, triggers `sky down`
+        in the background to teardown the cluster.
+      operationId: deleteInstance
+      responses:
+        '200':
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: deleted
+        '404':
+          description: Instance not found
+
+  # ── API Gateway ──────────────────────────────────────────────────
+  /v1/models:
+    get:
+      tags: [Gateway]
+      summary: List available models
+      description: Returns all models with at least one running instance (OpenAI-compatible).
+      operationId: listModels
+      responses:
+        '200':
+          description: Model list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  object:
+                    type: string
+                    example: list
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                          example: llama-70b-chat
+                        object:
+                          type: string
+                          example: model
+                        owned_by:
+                          type: string
+                          example: detoserve
+
+  /v1/chat/completions:
+    post:
+      tags: [Gateway]
+      summary: Chat completions
+      description: |
+        OpenAI-compatible chat completions endpoint. Routes to a backend
+        inference instance using round-robin load balancing.
+      operationId: chatCompletions
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatCompletionRequest'
+      responses:
+        '200':
+          description: Chat completion response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatCompletionResponse'
+        '404':
+          description: No backend available for the requested model
+        '502':
+          description: Backend inference error
+
+  /v1/completions:
+    post:
+      tags: [Gateway]
+      summary: Text completions
+      description: OpenAI-compatible text completions endpoint.
+      operationId: textCompletions
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [model, prompt]
+              properties:
+                model:
+                  type: string
+                prompt:
+                  type: string
+                max_tokens:
+                  type: integer
+                temperature:
+                  type: number
+      responses:
+        '200':
+          description: Completion response
+        '404':
+          description: No backend available
+        '502':
+          description: Backend inference error
+
+  # ── SkyPilot Bridge ─────────────────────────────────────────────
+  /api/clusters/heartbeat:
+    post:
+      tags: [Clusters]
+      summary: Agent heartbeat
+      description: |
+        Called periodically by the DetoServe Agent on each cluster.
+        Reports cluster name, nodes, and GPU information.
+      operationId: clusterHeartbeat
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HeartbeatPayload'
+      responses:
+        '200':
+          description: Heartbeat accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+
+  /api/clusters:
+    get:
+      tags: [Clusters]
+      summary: List registered clusters
+      operationId: listClusters
+      responses:
+        '200':
+          description: Array of clusters
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Cluster'
+
+  /api/clusters/{cluster_id}:
+    parameters:
+      - name: cluster_id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags: [Clusters]
+      summary: Get cluster detail
+      operationId: getCluster
+      responses:
+        '200':
+          description: Cluster detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Cluster'
+        '404':
+          description: Cluster not found
+    delete:
+      tags: [Clusters]
+      summary: Deregister a cluster
+      operationId: deleteCluster
+      responses:
+        '200':
+          description: Cluster removed
+
+  /api/clusters/provision:
+    post:
+      tags: [Clusters]
+      summary: Provision a new cluster
+      description: Launch a new cluster via `sky launch`.
+      operationId: provisionCluster
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, cloud, gpus]
+              properties:
+                name:
+                  type: string
+                cloud:
+                  type: string
+                  example: kubernetes
+                gpus:
+                  type: string
+                  example: A100:4
+                num_nodes:
+                  type: integer
+                  default: 1
+      responses:
+        '200':
+          description: Cluster provisioning started
+
+  /api/services:
+    post:
+      tags: [Services]
+      summary: Deploy a SkyPilot service
+      operationId: deployService
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeployServiceRequest'
+      responses:
+        '200':
+          description: Service deployment started
+    get:
+      tags: [Services]
+      summary: List SkyPilot services
+      operationId: listServices
+      responses:
+        '200':
+          description: Array of services
+
+  /api/services/{name}:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags: [Services]
+      summary: Get service status
+      operationId: getService
+      responses:
+        '200':
+          description: Service detail
+    delete:
+      tags: [Services]
+      summary: Tear down a service
+      operationId: deleteService
+      responses:
+        '200':
+          description: Service teardown started
+
+  /api/services/{name}/scale:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+    patch:
+      tags: [Services]
+      summary: Scale a service
+      operationId: scaleService
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                replicas:
+                  type: integer
+      responses:
+        '200':
+          description: Scale operation started
+
+  /api/resources:
+    get:
+      tags: [Clusters]
+      summary: Check available resources
+      description: Returns `sky check` output.
+      operationId: checkResources
+      responses:
+        '200':
+          description: Resource check result
+
+  /api/gpus:
+    get:
+      tags: [Clusters]
+      summary: List available GPU types
+      description: Returns `sky show-gpus` output.
+      operationId: listGPUs
+      responses:
+        '200':
+          description: GPU listing
+
+  # ── Health ───────────────────────────────────────────────────────
+  /healthz:
+    get:
+      tags: [Health]
+      summary: Health check
+      operationId: healthCheck
+      responses:
+        '200':
+          description: Service healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+
+components:
+  parameters:
+    FunctionId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Function ID (e.g. fn-1698765432101)
+    InstanceId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Instance ID (e.g. inst-1698765440001)
+
+  schemas:
+    ResourceSpec:
+      type: object
+      properties:
+        gpu_type:
+          type: string
+          example: A100
+        gpu_count:
+          type: integer
+          example: 4
+        tensor_parallel:
+          type: integer
+          example: 4
+        max_model_len:
+          type: integer
+          example: 8192
+        cpu:
+          type: string
+        memory:
+          type: string
+
+    ScalingSpec:
+      type: object
+      properties:
+        min_replicas:
+          type: integer
+          example: 1
+        max_replicas:
+          type: integer
+          example: 10
+        metric:
+          type: string
+          example: queue_depth
+        target_value:
+          type: integer
+          example: 10
+
+    RoutingSpec:
+      type: object
+      properties:
+        prefix_caching:
+          type: boolean
+          example: true
+        session_affinity:
+          type: boolean
+          example: true
+
+    FunctionInput:
+      type: object
+      required: [name, model_uri]
+      properties:
+        name:
+          type: string
+          example: llama-70b-chat
+        description:
+          type: string
+          example: Llama 3.1 70B for chat completions
+        version:
+          type: string
+          example: v1
+        runtime:
+          type: string
+          example: vllm
+        model_uri:
+          type: string
+          example: meta-llama/Llama-3.1-70B-Instruct
+        model_format:
+          type: string
+        quantization:
+          type: string
+          example: fp16
+        resources:
+          $ref: '#/components/schemas/ResourceSpec'
+        scaling:
+          $ref: '#/components/schemas/ScalingSpec'
+        routing:
+          $ref: '#/components/schemas/RoutingSpec'
+        extra_args:
+          type: array
+          items:
+            type: string
+        env_vars:
+          type: object
+          additionalProperties:
+            type: string
+        tags:
+          type: object
+          additionalProperties:
+            type: string
+
+    Function:
+      allOf:
+        - $ref: '#/components/schemas/FunctionInput'
+        - type: object
+          properties:
+            id:
+              type: string
+              example: fn-1698765432101
+            created_at:
+              type: string
+              format: date-time
+            updated_at:
+              type: string
+              format: date-time
+
+    DeployInput:
+      type: object
+      required: [tenant_id]
+      properties:
+        tenant_id:
+          type: string
+          example: hospital-a
+        cluster:
+          type: string
+          example: us-east-cluster
+        region:
+          type: string
+          example: us-east-1
+        cloud:
+          type: string
+          example: aws
+        use_spot:
+          type: boolean
+          example: false
+
+    Instance:
+      type: object
+      properties:
+        id:
+          type: string
+          example: inst-1698765440001
+        function_id:
+          type: string
+        function_name:
+          type: string
+        tenant_id:
+          type: string
+        cluster:
+          type: string
+        region:
+          type: string
+        cloud:
+          type: string
+        use_spot:
+          type: boolean
+        status:
+          type: string
+          enum: [deploying, running, failed, stopped]
+        endpoint:
+          type: string
+          example: http://localhost:30080
+        sky_cluster_name:
+          type: string
+          description: SkyPilot cluster name for this instance
+        deployed_via:
+          type: string
+          enum: [skypilot, manual]
+        replicas:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    SeedInstanceInput:
+      type: object
+      required: [function_name, tenant_id]
+      properties:
+        function_name:
+          type: string
+        tenant_id:
+          type: string
+        cluster:
+          type: string
+        endpoint:
+          type: string
+        status:
+          type: string
+          default: running
+        sky_cluster_name:
+          type: string
+        deployed_via:
+          type: string
+          default: skypilot
+
+    ChatCompletionRequest:
+      type: object
+      required: [model, messages]
+      properties:
+        model:
+          type: string
+          example: llama-70b-chat
+        messages:
+          type: array
+          items:
+            type: object
+            required: [role, content]
+            properties:
+              role:
+                type: string
+                enum: [system, user, assistant]
+              content:
+                type: string
+        temperature:
+          type: number
+          default: 0.7
+        max_tokens:
+          type: integer
+        stream:
+          type: boolean
+          default: false
+
+    ChatCompletionResponse:
+      type: object
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+          example: chat.completion
+        model:
+          type: string
+        choices:
+          type: array
+          items:
+            type: object
+            properties:
+              index:
+                type: integer
+              message:
+                type: object
+                properties:
+                  role:
+                    type: string
+                  content:
+                    type: string
+              finish_reason:
+                type: string
+
+    HeartbeatPayload:
+      type: object
+      required: [cluster_name]
+      properties:
+        cluster_name:
+          type: string
+        nodes:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              gpu_type:
+                type: string
+              gpu_count:
+                type: integer
+              gpu_in_use:
+                type: integer
+              gpu_free:
+                type: integer
+              labels:
+                type: object
+                additionalProperties:
+                  type: string
+
+    Cluster:
+      type: object
+      properties:
+        cluster_id:
+          type: string
+        cluster_name:
+          type: string
+        status:
+          type: string
+          enum: [online, offline]
+        total_gpus:
+          type: integer
+        in_use_gpus:
+          type: integer
+        free_gpus:
+          type: integer
+        nodes:
+          type: array
+          items:
+            type: object
+        last_heartbeat:
+          type: string
+          format: date-time
+
+    DeployServiceRequest:
+      type: object
+      required: [name, model]
+      properties:
+        name:
+          type: string
+        model:
+          type: string
+          example: meta-llama/Llama-3.1-70B-Instruct
+        runtime:
+          type: string
+          enum: [vllm, triton, dynamo]
+          default: vllm
+        gpu_type:
+          type: string
+          example: A100
+        gpu_count:
+          type: integer
+          default: 1
+        replicas:
+          type: integer
+          default: 1
+        cloud:
+          type: string
+          default: kubernetes
+        extra_args:
+          type: array
+          items:
+            type: string
