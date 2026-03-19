@@ -68,19 +68,21 @@ type RoutingSpec struct {
 }
 
 type Instance struct {
-	ID           string    `json:"id"`
-	FunctionID   string    `json:"function_id"`
-	FunctionName string    `json:"function_name"`
-	TenantID     string    `json:"tenant_id"`
-	Cluster      string    `json:"cluster"`
-	Region       string    `json:"region"`
-	Cloud        string    `json:"cloud"`
-	UseSpot      bool      `json:"use_spot"`
-	Status       string    `json:"status"`
-	Endpoint     string    `json:"endpoint"`
-	Replicas     int       `json:"replicas"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID               string    `json:"id"`
+	FunctionID       string    `json:"function_id"`
+	FunctionName     string    `json:"function_name"`
+	TenantID         string    `json:"tenant_id"`
+	Cluster          string    `json:"cluster"`
+	Region           string    `json:"region"`
+	Cloud            string    `json:"cloud"`
+	UseSpot          bool      `json:"use_spot"`
+	Status           string    `json:"status"`
+	Endpoint         string    `json:"endpoint"`
+	Replicas         int       `json:"replicas"`
+	SkyClusterName   string    `json:"sky_cluster_name"`
+	DeployedVia      string    `json:"deployed_via"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
 }
 
 // --- Store ---
@@ -129,6 +131,18 @@ func (s *Store) UpdateFunction(id string, update func(*Function)) bool {
 	if !ok { return false }
 	update(f)
 	f.UpdatedAt = time.Now()
+	return true
+}
+
+func (s *Store) UpdateInstance(id string, update func(*Instance)) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	inst, ok := s.instances[id]
+	if !ok {
+		return false
+	}
+	update(inst)
+	inst.UpdatedAt = time.Now()
 	return true
 }
 
@@ -226,20 +240,34 @@ func main() {
 		}
 
 		inst := &Instance{
-			ID:           fmt.Sprintf("inst-%d", time.Now().UnixMilli()),
-			FunctionID:   f.ID,
-			FunctionName: f.Name,
-			TenantID:     req.TenantID,
-			Cluster:      req.Cluster,
-			Region:       req.Region,
-			Cloud:        req.Cloud,
-			UseSpot:      req.UseSpot,
-			Status:       "deploying",
-			Replicas:     f.Scaling.MinReplicas,
-			CreatedAt:    time.Now(),
-			UpdatedAt:    time.Now(),
+			ID:             fmt.Sprintf("inst-%d", time.Now().UnixMilli()),
+			FunctionID:     f.ID,
+			FunctionName:   f.Name,
+			TenantID:       req.TenantID,
+			Cluster:        req.Cluster,
+			Region:         req.Region,
+			Cloud:          req.Cloud,
+			UseSpot:        req.UseSpot,
+			Status:         "deploying",
+			Replicas:       f.Scaling.MinReplicas,
+			SkyClusterName: "",
+			DeployedVia:    "",
+			CreatedAt:      time.Now(),
+			UpdatedAt:      time.Now(),
 		}
 		store.CreateInstance(inst)
+
+		instID := inst.ID
+		cloud := req.Cloud
+		go DeploySkyPilot(instID, f, cloud, func(endpoint, status, cluster string) {
+			store.UpdateInstance(instID, func(i *Instance) {
+				i.Endpoint = endpoint
+				i.Status = status
+				i.Cluster = cluster
+				i.SkyClusterName = cluster
+				i.DeployedVia = "skypilot"
+			})
+		})
 
 		log.Printf("Instance %s deploying function %s (tenant=%s, cluster=%s)",
 			inst.ID, f.Name, req.TenantID, req.Cluster)
@@ -257,8 +285,85 @@ func main() {
 		return c.JSON(inst)
 	})
 
+	app.Patch("/api/instances/:id", func(c *fiber.Ctx) error {
+		inst, ok := store.GetInstance(c.Params("id"))
+		if !ok {
+			return c.Status(404).JSON(fiber.Map{"error": "instance not found"})
+		}
+		var body struct {
+			Endpoint *string `json:"endpoint"`
+			Status   *string `json:"status"`
+			Cluster  *string `json:"cluster"`
+		}
+		if err := c.BodyParser(&body); err != nil {
+			return c.Status(400).JSON(fiber.Map{"error": "invalid request"})
+		}
+		store.UpdateInstance(c.Params("id"), func(i *Instance) {
+			if body.Endpoint != nil {
+				i.Endpoint = *body.Endpoint
+			}
+			if body.Status != nil {
+				i.Status = *body.Status
+			}
+			if body.Cluster != nil {
+				i.Cluster = *body.Cluster
+			}
+		})
+		inst, _ = store.GetInstance(c.Params("id"))
+		return c.JSON(inst)
+	})
+
+	app.Post("/api/instances/seed", func(c *fiber.Ctx) error {
+		var body struct {
+			FunctionID   string `json:"function_id"`
+			FunctionName string `json:"function_name"`
+			TenantID     string `json:"tenant_id"`
+			Endpoint     string `json:"endpoint"`
+			Cluster      string `json:"cluster"`
+			SkyClusterName string `json:"sky_cluster_name"`
+			DeployedVia  string `json:"deployed_via"`
+			Replicas     int    `json:"replicas"`
+		}
+		if err := c.BodyParser(&body); err != nil {
+			return c.Status(400).JSON(fiber.Map{"error": "invalid request"})
+		}
+		if body.FunctionID == "" || body.FunctionName == "" || body.Endpoint == "" {
+			return c.Status(400).JSON(fiber.Map{"error": "missing required field: function_id, function_name, or endpoint"})
+		}
+		inst := &Instance{
+			ID:             fmt.Sprintf("inst-%d", time.Now().UnixMilli()),
+			FunctionID:     body.FunctionID,
+			FunctionName:   body.FunctionName,
+			TenantID:       body.TenantID,
+			Status:         "running",
+			Endpoint:       body.Endpoint,
+			Cluster:        body.Cluster,
+			SkyClusterName: body.SkyClusterName,
+			DeployedVia:    body.DeployedVia,
+			Replicas:       body.Replicas,
+			CreatedAt:      time.Now(),
+			UpdatedAt:      time.Now(),
+		}
+		if inst.TenantID == "" {
+			inst.TenantID = "default"
+		}
+		if inst.DeployedVia == "" {
+			inst.DeployedVia = "skypilot"
+		}
+		store.CreateInstance(inst)
+		return c.Status(201).JSON(inst)
+	})
+
 	app.Delete("/api/instances/:id", func(c *fiber.Ctx) error {
-		store.DeleteInstance(c.Params("id"))
+		id := c.Params("id")
+		inst, ok := store.GetInstance(id)
+		if !ok {
+			return c.Status(404).JSON(fiber.Map{"error": "not found"})
+		}
+		if inst.DeployedVia == "skypilot" && inst.SkyClusterName != "" {
+			go SkyDown(inst.SkyClusterName)
+		}
+		store.DeleteInstance(id)
 		return c.JSON(fiber.Map{"status": "deleted"})
 	})
 

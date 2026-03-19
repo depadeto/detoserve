@@ -1,4 +1,4 @@
-# Local development environment — SkyPilot + Function-based architecture
+# DetoServe — local development stack (all Go services)
 # Run: docker compose up
 
 services:
@@ -25,7 +25,9 @@ services:
       PORT: "8083"
 
   skypilot-bridge:
-    build: ./control-plane/skypilot-bridge
+    build:
+      context: ./control-plane/skypilot-bridge
+      dockerfile: Dockerfile.golang
     ports:
       - "8085:8085"
     environment:
@@ -37,6 +39,13 @@ services:
       - ~/.config/gcloud:/root/.config/gcloud:ro
       - ~/.kube:/root/.kube:ro
       - ~/.sky:/root/.sky
+
+  cluster-manager:
+    build: ./control-plane/cluster-manager
+    ports:
+      - "8084:8084"
+    environment:
+      PORT: "8084"
 
   deployment-manager:
     build: ./control-plane/deployment-manager
@@ -55,8 +64,12 @@ services:
     environment:
       PORT: "8086"
       CONFIG_STORE_URL: http://config-store:8087
+      DEV_MODE: "true"
     depends_on:
       - config-store
+    volumes:
+      - ~/.kube:/root/.kube:ro
+      - ~/.sky:/root/.sky
 
   config-store:
     build: ./control-plane/config-store
@@ -68,12 +81,15 @@ services:
     volumes:
       - config-data:/data/configs
 
-  # Frontend dev server (run separately with npm run dev for hot reload)
-  # Or build and serve statically:
-  # frontend:
-  #   build: ./frontend
-  #   ports:
-  #     - "3000:3000"
+  api-gateway:
+    build: ./control-plane/api-gateway
+    ports:
+      - "8090:8090"
+    environment:
+      GATEWAY_PORT: "8090"
+      FUNCTION_MANAGER_URL: http://function-manager:8086
+    depends_on:
+      - function-manager
 
 volumes:
   config-data:

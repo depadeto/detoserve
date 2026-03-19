@@ -11,7 +11,6 @@
 vendor/
 *.test
 *.out
-go.sum
 
 # Node / Frontend
 frontend/node_modules/

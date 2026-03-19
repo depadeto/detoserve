@@ -231,6 +231,17 @@ function FunctionsPage({ functions, onSelect, onCreate }) {
 }
 
 function FunctionDetail({ fn, instances, onBack, onDeploy, onDelete, onDeleteInstance }) {
+  const runningInstances = instances.filter(i => i.status === 'running' && i.endpoint)
+  const gatewayUrl = `http://localhost:8090/v1/chat/completions`
+  const [copied, setCopied] = useState(null)
+
+  const copyText = (text, id) => {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(id)
+      setTimeout(() => setCopied(null), 2000)
+    })
+  }
+
   return (
     <>
       <div className="page-header">
@@ -246,6 +257,34 @@ function FunctionDetail({ fn, instances, onBack, onDeploy, onDelete, onDeleteIns
           <button className="btn btn-danger" onClick={onDelete}>Delete</button>
         </div>
       </div>
+
+      {runningInstances.length > 0 && (
+        <div className="detail-section" style={{ background: 'linear-gradient(135deg, rgba(99,102,241,0.15), rgba(16,185,129,0.1))', border: '1px solid rgba(99,102,241,0.3)', borderRadius: 12, padding: '20px 24px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+            <div className="detail-section-title" style={{ margin: 0, color: '#818cf8' }}>Consumer Endpoint</div>
+            <span className="badge badge-available" style={{ fontSize: 11 }}>{runningInstances.length} backend{runningInstances.length > 1 ? 's' : ''} active</span>
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--text-dim)', marginBottom: 10 }}>
+            Use this single endpoint to access all running instances. The gateway load-balances across backends.
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+            <code style={{ flex: 1, background: 'rgba(0,0,0,0.3)', padding: '10px 14px', borderRadius: 8, fontSize: 13, color: '#a5b4fc', fontFamily: 'monospace', wordBreak: 'break-all' }}>
+              POST {gatewayUrl}
+            </code>
+            <button className="btn btn-sm" onClick={() => copyText(gatewayUrl, 'gw')}
+              style={{ whiteSpace: 'nowrap' }}>
+              {copied === 'gw' ? 'Copied!' : 'Copy URL'}
+            </button>
+          </div>
+          <div style={{ background: 'rgba(0,0,0,0.25)', borderRadius: 8, padding: '12px 14px', fontSize: 12, fontFamily: 'monospace', color: '#94a3b8', lineHeight: 1.6 }}>
+            <div style={{ color: '#64748b' }}>{'// Example request'}</div>
+            <div>curl -X POST {gatewayUrl} \</div>
+            <div>&nbsp;&nbsp;-H "Content-Type: application/json" \</div>
+            <div>&nbsp;&nbsp;-H "X-Tenant-ID: {'<your-tenant>'}" \</div>
+            <div>&nbsp;&nbsp;-d '{`{"model": "${fn.name}", "messages": [{"role": "user", "content": "Hello"}]}`}'</div>
+          </div>
+        </div>
+      )}
 
       <div className="detail-section">
         <div className="detail-section-title">Configuration</div>
@@ -281,14 +320,25 @@ function FunctionDetail({ fn, instances, onBack, onDeploy, onDelete, onDeleteIns
           <div className="instance-list">
             {instances.map(inst => (
               <div key={inst.id} className="instance-card">
-                <div className="instance-info">
+                <div className="instance-info" style={{ flex: 1 }}>
                   <StatusBadge status={inst.status} />
-                  <div>
-                    <div style={{ fontWeight: 500, fontSize: 14 }}>{inst.id}</div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontWeight: 500, fontSize: 14 }}>{inst.tenant_id || 'default'}</div>
                     <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>
-                      {inst.cluster || inst.cloud || 'auto'} / {inst.region || 'auto'} / {inst.tenant_id}
-                      {inst.use_spot && ' (spot)'}
+                      {inst.sky_cluster_name || inst.cluster || inst.id}
+                      {inst.deployed_via && <span style={{ marginLeft: 8, color: '#818cf8' }}>via {inst.deployed_via}</span>}
                     </div>
+                    {inst.endpoint && inst.status === 'running' && (
+                      <div style={{ marginTop: 6, display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <code style={{ fontSize: 11, color: '#10b981', background: 'rgba(16,185,129,0.1)', padding: '2px 8px', borderRadius: 4 }}>
+                          {inst.endpoint}
+                        </code>
+                        <button className="btn btn-sm" style={{ fontSize: 10, padding: '2px 6px' }}
+                          onClick={() => copyText(inst.endpoint, inst.id)}>
+                          {copied === inst.id ? 'Copied' : 'Copy'}
+                        </button>
+                      </div>
+                    )}
                   </div>
                 </div>
                 <div className="btn-group">
@@ -305,6 +355,15 @@ function FunctionDetail({ fn, instances, onBack, onDeploy, onDelete, onDeleteIns
 }
 
 function InstancesPage({ instances }) {
+  const gatewayUrl = 'http://localhost:8090'
+  const [copied, setCopied] = useState(null)
+  const copyText = (text, id) => {
+    navigator.clipboard.writeText(text).then(() => { setCopied(id); setTimeout(() => setCopied(null), 2000) })
+  }
+
+  const runningCount = instances.filter(i => i.status === 'running').length
+  const models = [...new Set(instances.map(i => i.function_name).filter(Boolean))]
+
   return (
     <>
       <div className="page-header">
@@ -313,6 +372,29 @@ function InstancesPage({ instances }) {
           <div className="page-subtitle">Running deployments across clusters</div>
         </div>
       </div>
+
+      {runningCount > 0 && (
+        <div style={{ background: 'linear-gradient(135deg, rgba(99,102,241,0.12), rgba(16,185,129,0.08))', border: '1px solid rgba(99,102,241,0.25)', borderRadius: 12, padding: '16px 20px', marginBottom: 20 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+            <span style={{ fontWeight: 600, color: '#818cf8', fontSize: 14 }}>API Gateway</span>
+            <span className="badge badge-available">{runningCount} backend{runningCount > 1 ? 's' : ''}</span>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <code style={{ flex: 1, background: 'rgba(0,0,0,0.3)', padding: '8px 12px', borderRadius: 6, fontSize: 13, color: '#a5b4fc', fontFamily: 'monospace' }}>
+              {gatewayUrl}/v1/chat/completions
+            </code>
+            <button className="btn btn-sm" onClick={() => copyText(`${gatewayUrl}/v1/chat/completions`, 'gw')}>
+              {copied === 'gw' ? 'Copied!' : 'Copy'}
+            </button>
+          </div>
+          {models.length > 0 && (
+            <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-dim)' }}>
+              Models: {models.map(m => <code key={m} style={{ color: '#10b981', marginRight: 8 }}>{m}</code>)}
+            </div>
+          )}
+        </div>
+      )}
+
       {instances.length === 0 ? (
         <div className="empty">
           <div className="empty-icon">-</div>
@@ -322,13 +404,21 @@ function InstancesPage({ instances }) {
         <div className="instance-list">
           {instances.map(inst => (
             <div key={inst.id} className="instance-card">
-              <div className="instance-info">
+              <div className="instance-info" style={{ flex: 1 }}>
                 <StatusBadge status={inst.status} />
-                <div>
+                <div style={{ flex: 1 }}>
                   <div style={{ fontWeight: 500 }}>{inst.function_name}</div>
                   <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>
-                    {inst.id} / {inst.cluster || inst.cloud || 'auto'} / {inst.tenant_id}
+                    {inst.sky_cluster_name || inst.id} / {inst.tenant_id || 'default'}
+                    {inst.deployed_via && <span style={{ color: '#818cf8', marginLeft: 6 }}>via {inst.deployed_via}</span>}
                   </div>
+                  {inst.endpoint && inst.status === 'running' && (
+                    <div style={{ marginTop: 4 }}>
+                      <code style={{ fontSize: 11, color: '#10b981', background: 'rgba(16,185,129,0.1)', padding: '2px 8px', borderRadius: 4 }}>
+                        {inst.endpoint}
+                      </code>
+                    </div>
+                  )}
                 </div>
               </div>
               <span className="tag instances">{inst.replicas} replicas</span>

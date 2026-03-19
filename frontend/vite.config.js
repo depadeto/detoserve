@@ -6,7 +6,7 @@ export default defineConfig({
   server: {
     port: 3000,
     proxy: {
-      '/api/clusters': 'http://localhost:8099',
+      '/api/clusters': 'http://localhost:8085',
       '/api': 'http://localhost:8086',
     },
   },

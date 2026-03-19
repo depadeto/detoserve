@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
 """
-DetoServe Cluster Agent
+DetoServe Cluster Agent — powered by SkyPilot
 
 Deployed on each onboarded cluster (via Helm or standalone).
-Discovers GPUs from Kubernetes node metadata and sends heartbeats
+Uses SkyPilot's Kubernetes API for GPU discovery and sends heartbeats
 to the DetoServe control plane.
 
 Environment variables:
   CONTROL_PLANE_URL  - Control plane endpoint (default: http://localhost:8085)
-  CLUSTER_ID         - Unique cluster identifier (auto-detected if empty)
+  CLUSTER_ID         - Unique cluster identifier (auto-detected from kube context)
   CLUSTER_NAME       - Human-friendly name (defaults to CLUSTER_ID)
   REPORT_INTERVAL    - Heartbeat interval in seconds (default: 10)
   API_TOKEN          - Bearer token for control plane auth (optional)
   PORT               - Health/status server port (default: 9090)
+  KUBE_CONTEXT       - Kubernetes context to use (auto-detected if empty)
 """
 
 import json
@@ -22,23 +23,30 @@ import threading
 import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
+try:
+    from sky.provision.kubernetes import utils as sky_k8s
+    HAS_SKYPILOT = True
+except ImportError:
+    HAS_SKYPILOT = False
+
 CONTROL_PLANE_URL = os.getenv("CONTROL_PLANE_URL", "http://localhost:8085")
 CLUSTER_ID = os.getenv("CLUSTER_ID", "")
 CLUSTER_NAME = os.getenv("CLUSTER_NAME", "")
 REPORT_INTERVAL = int(os.getenv("REPORT_INTERVAL", "10"))
 API_TOKEN = os.getenv("API_TOKEN", "")
 PORT = int(os.getenv("PORT", "9090"))
+KUBE_CONTEXT = os.getenv("KUBE_CONTEXT", "")
 
 state = {}
 
 
-def detect_cluster_id():
+def _detect_kube_context():
     try:
         r = subprocess.run(["kubectl", "config", "current-context"],
                            capture_output=True, text=True, timeout=5)
-        return r.stdout.strip() if r.returncode == 0 else f"unknown-{int(time.time())}"
+        return r.stdout.strip() if r.returncode == 0 else ""
     except Exception:
-        return f"unknown-{int(time.time())}"
+        return ""
 
 
 def detect_provider(ctx):
@@ -53,12 +61,88 @@ def detect_provider(ctx):
     return "Kubernetes"
 
 
-def _get_gpu_usage_per_node():
-    """Query all non-terminal pods and sum GPU requests per node."""
+def discover_via_skypilot(context):
+    """Use SkyPilot's Kubernetes API for rich GPU discovery."""
+    global state
+    cluster_id = CLUSTER_ID or context
+    cluster_name = CLUSTER_NAME or cluster_id
+
+    node_info = sky_k8s.get_kubernetes_node_info(context=context)
+    allocated = sky_k8s.get_allocated_gpu_qty_by_node(context=context)
+    info_dict = node_info.to_dict().get("node_info_dict", {})
+
+    nodes = []
+    total_gpus = 0
+    avail_gpus = 0
+    gpu_map = {}
+    k8s_version = ""
+
+    for name, ni in info_dict.items():
+        gpu_total = ni.get("total", {}).get("accelerator_count", 0)
+        gpu_free = ni.get("free", {}).get("accelerators_available", 0)
+        gpu_used = allocated.get(name, 0)
+        acc_type = ni.get("accelerator_type") or ""
+
+        # SkyPilot normalizes GPU names like "H100-80GB"; map to machine label style
+        gpu_machine = acc_type.replace("-", "-").upper() if acc_type else ""
+        gpu_family = ""
+        if "H100" in gpu_machine:
+            gpu_family = "hopper"
+        elif "A100" in gpu_machine:
+            gpu_family = "ampere"
+        elif "L40" in gpu_machine:
+            gpu_family = "ada"
+        elif "V100" in gpu_machine:
+            gpu_family = "volta"
+
+        ready = ni.get("is_ready", False) and not ni.get("is_cordoned", False)
+
+        node = {
+            "name": name,
+            "status": "Ready" if ready else "NotReady",
+            "role": "worker",
+            "cpu": str(int(ni.get("cpu_count", 0))),
+            "memory_gb": f"{ni.get('memory_gb', 0):.1f}",
+            "gpu_type": gpu_machine,
+            "gpu_count": gpu_total,
+            "gpu_used": gpu_used,
+            "gpu_available": gpu_free,
+            "gpu_family": gpu_family,
+            "accelerator_type": acc_type,
+            "cpu_free": ni.get("cpu_free", 0),
+            "memory_free_gb": f"{ni.get('memory_free_gb', 0):.1f}",
+        }
+        nodes.append(node)
+        total_gpus += gpu_total
+        avail_gpus += gpu_free
+
+        if acc_type:
+            if acc_type not in gpu_map:
+                gpu_map[acc_type] = {"name": acc_type, "family": gpu_family, "count": 0, "available": 0}
+            gpu_map[acc_type]["count"] += gpu_total
+            gpu_map[acc_type]["available"] += gpu_free
+
+    state = {
+        "cluster_id": cluster_id,
+        "cluster_name": cluster_name,
+        "status": "healthy",
+        "provider": detect_provider(cluster_id),
+        "discovery_source": "skypilot",
+        "total_gpus": total_gpus,
+        "available_gpus": avail_gpus,
+        "gpu_types": list(gpu_map.values()),
+        "nodes": nodes,
+    }
+    print(f"[discover/skypilot] cluster={cluster_id} gpus={avail_gpus}/{total_gpus} nodes={len(nodes)}")
+
+
+def _get_gpu_usage_per_node_kubectl():
+    """Fallback: query pods via kubectl to sum GPU requests per node."""
     usage = {}
     try:
         r = subprocess.run(
-            ["kubectl", "get", "pods", "--all-namespaces", "--field-selector=status.phase!=Succeeded,status.phase!=Failed", "-o", "json"],
+            ["kubectl", "get", "pods", "--all-namespaces",
+             "--field-selector=status.phase!=Succeeded,status.phase!=Failed", "-o", "json"],
             capture_output=True, text=True, timeout=15,
         )
         if r.returncode != 0:
@@ -79,23 +163,24 @@ def _get_gpu_usage_per_node():
     return usage
 
 
-def discover():
+def discover_via_kubectl():
+    """Fallback discovery using raw kubectl when SkyPilot is unavailable."""
     global state
-    cluster_id = CLUSTER_ID or detect_cluster_id()
+    cluster_id = CLUSTER_ID or _detect_kube_context()
     cluster_name = CLUSTER_NAME or cluster_id
 
     try:
         r = subprocess.run(["kubectl", "get", "nodes", "-o", "json"],
                            capture_output=True, text=True, timeout=15)
         if r.returncode != 0:
-            print(f"[discover] kubectl failed: {r.stderr}")
+            print(f"[discover/kubectl] kubectl failed: {r.stderr}")
             return
         data = json.loads(r.stdout)
     except Exception as e:
-        print(f"[discover] error: {e}")
+        print(f"[discover/kubectl] error: {e}")
         return
 
-    gpu_used_per_node = _get_gpu_usage_per_node()
+    gpu_used_per_node = _get_gpu_usage_per_node_kubectl()
 
     nodes = []
     total_gpus = 0
@@ -107,7 +192,6 @@ def discover():
         labels = meta.get("labels", {})
         st = item.get("status", {})
         cap = st.get("capacity", {})
-        alloc = st.get("allocatable", {})
         conditions = st.get("conditions", [])
         ni = st.get("nodeInfo", {})
 
@@ -118,31 +202,21 @@ def discover():
 
         ready = any(c["type"] == "Ready" and c["status"] == "True" for c in conditions)
 
-        role = "worker"
-        for k in labels:
-            if k.startswith("node-role.kubernetes.io/"):
-                role = k.split("/")[1]
-
-        mem_str = cap.get("memory", "0")
-        mem_num = int("".join(c for c in mem_str if c.isdigit()) or "0")
-        mem_gb = f"{mem_num / 1024 / 1024:.1f}"
-
         gpu_type = labels.get("nvidia.com/gpu.machine", "")
         gpu_family = labels.get("nvidia.com/gpu.family", "")
 
         node = {
             "name": node_name,
             "status": "Ready" if ready else "NotReady",
-            "role": role,
+            "role": "worker",
             "cpu": cap.get("cpu", "0"),
-            "memory_gb": mem_gb,
+            "memory_gb": "0",
             "gpu_type": gpu_type,
             "gpu_count": gpu_cap,
             "gpu_used": gpu_used,
             "gpu_available": gpu_free,
             "gpu_family": gpu_family,
             "k8s_version": ni.get("kubeletVersion", ""),
-            "container_runtime": ni.get("containerRuntimeVersion", ""),
         }
         nodes.append(node)
         total_gpus += gpu_cap
@@ -154,20 +228,29 @@ def discover():
             gpu_map[gpu_type]["count"] += gpu_cap
             gpu_map[gpu_type]["available"] += gpu_free
 
-    k8s_version = nodes[0]["k8s_version"] if nodes else ""
-
     state = {
         "cluster_id": cluster_id,
         "cluster_name": cluster_name,
         "status": "healthy",
         "provider": detect_provider(cluster_id),
-        "k8s_version": k8s_version,
+        "discovery_source": "kubectl",
         "total_gpus": total_gpus,
         "available_gpus": avail_gpus,
         "gpu_types": list(gpu_map.values()),
         "nodes": nodes,
     }
-    print(f"[discover] cluster={cluster_id} gpus={avail_gpus}/{total_gpus} nodes={len(nodes)}")
+    print(f"[discover/kubectl] cluster={cluster_id} gpus={avail_gpus}/{total_gpus} nodes={len(nodes)}")
+
+
+def discover():
+    context = KUBE_CONTEXT or _detect_kube_context()
+    if HAS_SKYPILOT:
+        try:
+            discover_via_skypilot(context)
+            return
+        except Exception as e:
+            print(f"[discover] SkyPilot failed, falling back to kubectl: {e}")
+    discover_via_kubectl()
 
 
 def send_heartbeat():
