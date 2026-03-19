@@ -8,21 +8,16 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"strconv"
+	"path/filepath"
 	"strings"
 	"time"
 )
 
-// DetoServe Cluster Agent
+// DetoServe Cluster Agent (SkyPilot-powered)
 //
 // Deployed via Helm chart on each onboarded cluster.
-// Responsibilities:
-//   1. GPU Discovery — runs `sky show-gpus --cloud kubernetes` to detect GPUs
-//   2. Node Inventory — queries Kubernetes API for node status and resources
-//   3. Heartbeat — reports cluster health, GPU inventory, and utilization to
-//      the DetoServe control plane every N seconds
-//   4. Cache Reporting — scrapes vLLM pods for KV cache prefix hashes and
-//      load metrics, forwards to Smart Router
+// Uses SkyPilot's Kubernetes API for GPU/node discovery
+// and sends heartbeats to the DetoServe control plane.
 
 type Config struct {
 	ControlPlaneURL string
@@ -57,7 +52,6 @@ type ClusterState struct {
 	ClusterName   string     `json:"cluster_name"`
 	Status        string     `json:"status"`
 	Provider      string     `json:"provider"`
-	K8sVersion    string     `json:"k8s_version"`
 	TotalGPUs     int        `json:"total_gpus"`
 	AvailableGPUs int        `json:"available_gpus"`
 	GPUTypes      []GPUType  `json:"gpu_types"`
@@ -73,17 +67,19 @@ type GPUType struct {
 }
 
 type NodeInfo struct {
-	Name             string `json:"name"`
-	Status           string `json:"status"`
-	Role             string `json:"role"`
-	CPU              string `json:"cpu"`
-	MemoryGB         string `json:"memory_gb"`
-	GPUType          string `json:"gpu_type"`
-	GPUCount         int    `json:"gpu_count"`
-	GPUAvailable     int    `json:"gpu_available"`
-	GPUFamily        string `json:"gpu_family"`
-	K8sVersion       string `json:"k8s_version"`
-	ContainerRuntime string `json:"container_runtime"`
+	Name            string  `json:"name"`
+	Status          string  `json:"status"`
+	Role            string  `json:"role"`
+	CPU             string  `json:"cpu"`
+	CPUFree         float64 `json:"cpu_free"`
+	MemoryGB        string  `json:"memory_gb"`
+	MemoryFreeGB    string  `json:"memory_free_gb"`
+	GPUType         string  `json:"gpu_type"`
+	AcceleratorType string  `json:"accelerator_type"`
+	GPUCount        int     `json:"gpu_count"`
+	GPUAvailable    int     `json:"gpu_available"`
+	GPUUsed         int     `json:"gpu_used"`
+	GPUFamily       string  `json:"gpu_family"`
 }
 
 func NewAgent(cfg Config) *Agent {
@@ -93,7 +89,6 @@ func NewAgent(cfg Config) *Agent {
 	if cfg.ClusterName == "" {
 		cfg.ClusterName = cfg.ClusterID
 	}
-
 	return &Agent{
 		cfg:    cfg,
 		client: &http.Client{Timeout: 10 * time.Second},
@@ -109,7 +104,7 @@ func discoverClusterID() string {
 	return strings.TrimSpace(string(out))
 }
 
-// HeartbeatLoop discovers GPUs and sends state to control plane on interval.
+// HeartbeatLoop discovers GPUs via SkyPilot and sends state to control plane.
 func (a *Agent) HeartbeatLoop() {
 	a.discover()
 	a.sendHeartbeat()
@@ -123,9 +118,106 @@ func (a *Agent) HeartbeatLoop() {
 	}
 }
 
-// discover uses SkyPilot + kubectl to build cluster state.
+// skyDiscoveryResult matches the JSON output of skypilot_discover.py
+type skyDiscoveryResult struct {
+	Nodes []struct {
+		Name            string  `json:"name"`
+		AcceleratorType string  `json:"accelerator_type"`
+		GPUCount        int     `json:"gpu_count"`
+		GPUAvailable    int     `json:"gpu_available"`
+		CPU             float64 `json:"cpu"`
+		CPUFree         float64 `json:"cpu_free"`
+		MemoryGB        float64 `json:"memory_gb"`
+		MemoryFreeGB    float64 `json:"memory_free_gb"`
+		IPAddress       string  `json:"ip_address"`
+		IsReady         bool    `json:"is_ready"`
+	} `json:"nodes"`
+	Error string `json:"error"`
+}
+
+// discoverViaSkyPilot calls the Python helper that uses SkyPilot's Kubernetes API.
+func (a *Agent) discoverViaSkyPilot() ([]NodeInfo, error) {
+	scriptPath := filepath.Join(exeDir(), "skypilot_discover.py")
+	if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
+		scriptPath = "skypilot_discover.py"
+	}
+
+	cmd := exec.Command("python3", "-W", "ignore", scriptPath)
+	cmd.Stderr = nil
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("skypilot_discover.py failed: %v — %s", err, string(out))
+	}
+
+	var result skyDiscoveryResult
+	if err := json.Unmarshal(out, &result); err != nil {
+		return nil, fmt.Errorf("parse skypilot output: %v", err)
+	}
+	if result.Error != "" {
+		return nil, fmt.Errorf("skypilot error: %s", result.Error)
+	}
+
+	var nodes []NodeInfo
+	for _, n := range result.Nodes {
+		status := "NotReady"
+		if n.IsReady {
+			status = "Ready"
+		}
+		role := "worker"
+		if strings.Contains(n.Name, "server") || strings.Contains(n.Name, "master") || strings.Contains(n.Name, "control") {
+			role = "control-plane"
+		}
+
+		gpuUsed := n.GPUCount - n.GPUAvailable
+		if gpuUsed < 0 {
+			gpuUsed = 0
+		}
+
+		nodes = append(nodes, NodeInfo{
+			Name:            n.Name,
+			Status:          status,
+			Role:            role,
+			CPU:             fmt.Sprintf("%.0f", n.CPU),
+			CPUFree:         n.CPUFree,
+			MemoryGB:        fmt.Sprintf("%.1f", n.MemoryGB),
+			MemoryFreeGB:    fmt.Sprintf("%.1f", n.MemoryFreeGB),
+			GPUType:         n.AcceleratorType,
+			AcceleratorType: n.AcceleratorType,
+			GPUCount:        n.GPUCount,
+			GPUAvailable:    n.GPUAvailable,
+			GPUUsed:         gpuUsed,
+			GPUFamily:       gpuFamily(n.AcceleratorType),
+		})
+	}
+	return nodes, nil
+}
+
+func gpuFamily(accType string) string {
+	t := strings.ToUpper(accType)
+	switch {
+	case strings.Contains(t, "H100") || strings.Contains(t, "H200"):
+		return "hopper"
+	case strings.Contains(t, "A100") || strings.Contains(t, "A10") || strings.Contains(t, "A30") || strings.Contains(t, "A40"):
+		return "ampere"
+	case strings.Contains(t, "L40") || strings.Contains(t, "L4"):
+		return "ada-lovelace"
+	case strings.Contains(t, "V100"):
+		return "volta"
+	case strings.Contains(t, "T4"):
+		return "turing"
+	default:
+		return ""
+	}
+}
+
+// discover uses SkyPilot to build cluster state.
 func (a *Agent) discover() {
-	nodes := a.discoverNodes()
+	nodes, err := a.discoverViaSkyPilot()
+	if err != nil {
+		log.Printf("[discover] SkyPilot discovery failed: %v", err)
+		return
+	}
+
 	a.state.Nodes = nodes
 	a.state.Status = "healthy"
 	a.state.Provider = detectProvider()
@@ -136,9 +228,6 @@ func (a *Agent) discover() {
 	gpuMap := make(map[string]*GPUType)
 
 	for _, n := range nodes {
-		if n.K8sVersion != "" && a.state.K8sVersion == "" {
-			a.state.K8sVersion = n.K8sVersion
-		}
 		totalGPUs += n.GPUCount
 		availGPUs += n.GPUAvailable
 		if n.GPUType != "" {
@@ -160,83 +249,8 @@ func (a *Agent) discover() {
 	}
 	a.state.GPUTypes = types
 
-	log.Printf("[discover] cluster=%s gpus=%d/%d available, nodes=%d",
+	log.Printf("[discover/skypilot] cluster=%s gpus=%d/%d available, nodes=%d",
 		a.state.ClusterID, availGPUs, totalGPUs, len(nodes))
-}
-
-// discoverNodes queries kubectl for node info including GPU resources.
-func (a *Agent) discoverNodes() []NodeInfo {
-	out, err := exec.Command("kubectl", "get", "nodes", "-o", "json").Output()
-	if err != nil {
-		log.Printf("[discover] kubectl failed: %v", err)
-		return nil
-	}
-
-	var result struct {
-		Items []struct {
-			Metadata struct {
-				Name   string            `json:"name"`
-				Labels map[string]string `json:"labels"`
-			} `json:"metadata"`
-			Status struct {
-				Conditions []struct {
-					Type   string `json:"type"`
-					Status string `json:"status"`
-				} `json:"conditions"`
-				Capacity    map[string]string `json:"capacity"`
-				Allocatable map[string]string `json:"allocatable"`
-				NodeInfo    struct {
-					KubeletVersion          string `json:"kubeletVersion"`
-					ContainerRuntimeVersion string `json:"containerRuntimeVersion"`
-					OSImage                 string `json:"osImage"`
-				} `json:"nodeInfo"`
-			} `json:"status"`
-		} `json:"items"`
-	}
-
-	if err := json.Unmarshal(out, &result); err != nil {
-		log.Printf("[discover] json parse failed: %v", err)
-		return nil
-	}
-
-	var nodes []NodeInfo
-	for _, item := range result.Items {
-		gpuCap, _ := strconv.Atoi(item.Status.Capacity["nvidia.com/gpu"])
-		gpuAlloc, _ := strconv.Atoi(item.Status.Allocatable["nvidia.com/gpu"])
-
-		status := "NotReady"
-		for _, c := range item.Status.Conditions {
-			if c.Type == "Ready" && c.Status == "True" {
-				status = "Ready"
-			}
-		}
-
-		role := "worker"
-		for k := range item.Metadata.Labels {
-			if strings.HasPrefix(k, "node-role.kubernetes.io/") {
-				role = strings.TrimPrefix(k, "node-role.kubernetes.io/")
-			}
-		}
-
-		memKi, _ := strconv.ParseFloat(strings.TrimSuffix(item.Status.Capacity["memory"], "Ki"), 64)
-		memGB := fmt.Sprintf("%.1f", memKi/1024/1024)
-
-		n := NodeInfo{
-			Name:             item.Metadata.Name,
-			Status:           status,
-			Role:             role,
-			CPU:              item.Status.Capacity["cpu"],
-			MemoryGB:         memGB,
-			GPUType:          item.Metadata.Labels["nvidia.com/gpu.machine"],
-			GPUCount:         gpuCap,
-			GPUAvailable:     gpuAlloc,
-			GPUFamily:        item.Metadata.Labels["nvidia.com/gpu.family"],
-			K8sVersion:       item.Status.NodeInfo.KubeletVersion,
-			ContainerRuntime: item.Status.NodeInfo.ContainerRuntimeVersion,
-		}
-		nodes = append(nodes, n)
-	}
-	return nodes
 }
 
 func detectProvider() string {
@@ -258,6 +272,9 @@ func detectProvider() string {
 
 // sendHeartbeat POSTs cluster state to the control plane.
 func (a *Agent) sendHeartbeat() {
+	if a.state.Nodes == nil {
+		return
+	}
 	data, _ := json.Marshal(a.state)
 	url := a.cfg.ControlPlaneURL + "/api/clusters/heartbeat"
 
@@ -277,10 +294,15 @@ func (a *Agent) sendHeartbeat() {
 		return
 	}
 	resp.Body.Close()
+	log.Printf("[heartbeat] sent -> %d", resp.StatusCode)
+}
 
-	if resp.StatusCode >= 300 {
-		log.Printf("[heartbeat] control plane returned %d", resp.StatusCode)
+func exeDir() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return "."
 	}
+	return filepath.Dir(exe)
 }
 
 func main() {
@@ -300,9 +322,12 @@ func main() {
 		json.NewEncoder(w).Encode(agent.state)
 	})
 
-	log.Printf("DetoServe Agent starting on :%s (cluster=%s, control-plane=%s)",
-		cfg.Port, cfg.ClusterID, cfg.ControlPlaneURL)
-	http.ListenAndServe(":"+cfg.Port, mux)
+	addr := ":" + cfg.Port
+	log.Printf("DetoServe Agent starting on %s (cluster=%s, control-plane=%s, discovery=skypilot)",
+		addr, cfg.ClusterID, cfg.ControlPlaneURL)
+	if err := http.ListenAndServe(addr, mux); err != nil {
+		log.Fatalf("HTTP server failed: %v", err)
+	}
 }
 
 func envOr(key, fallback string) string {
