@@ -1,0 +1,93 @@
+global:
+  namespace: detoserve-system
+
+redis:
+  image:
+    repository: redis
+    tag: 7-alpine
+  replicaCount: 1
+  port: 6379
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "1Gi"
+
+smartRouter:
+  image:
+    repository: detoserve/smart-router
+    tag: latest
+  replicaCount: 2
+  port: 8080
+  env:
+    REDIS_ADDR: "detoserve-redis:6379"
+
+tenantManager:
+  image:
+    repository: detoserve/tenant-manager
+    tag: latest
+  replicaCount: 2
+  port: 8083
+
+skypilotBridge:
+  image:
+    repository: detoserve/skypilot-bridge
+    tag: latest
+  replicaCount: 1
+  port: 8085
+  env:
+    SERVICES_DIR: "/app/services"
+
+deploymentManager:
+  image:
+    repository: detoserve/deployment-manager
+    tag: latest
+  replicaCount: 2
+  port: 8082
+  env:
+    SKYPILOT_BRIDGE_URL: "http://detoserve-skypilot-bridge:8085"
+
+functionManager:
+  image:
+    repository: detoserve/function-manager
+    tag: latest
+  replicaCount: 1
+  port: 8086
+  env:
+    CONFIG_STORE_URL: "http://detoserve-config-store:8087"
+    DEV_MODE: "false"
+
+configStore:
+  image:
+    repository: detoserve/config-store
+    tag: latest
+  replicaCount: 1
+  port: 8087
+  env:
+    STORAGE_DIR: "/data/configs"
+  persistence:
+    enabled: false
+    size: 1Gi
+
+apiGateway:
+  image:
+    repository: detoserve/api-gateway
+    tag: latest
+  replicaCount: 2
+  port: 8090
+  serviceType: LoadBalancer
+  env:
+    FUNCTION_MANAGER_URL: "http://detoserve-function-manager:8086"
+  resources:
+    requests:
+      cpu: "250m"
+      memory: "256Mi"
+    limits:
+      cpu: "1"
+      memory: "512Mi"
+
+clusterManager:
+  image:
+    repository: detoserve/cluster-manager
+    tag: latest
+  replicaCount: 1
+  port: 8084

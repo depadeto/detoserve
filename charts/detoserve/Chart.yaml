@@ -1,0 +1,7 @@
+apiVersion: v2
+name: detoserve
+description: A Helm chart for DetoServe Control Plane Services
+type: application
+version: 0.2.0
+appVersion: "0.2.0"
+
